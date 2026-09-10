@@ -31,6 +31,13 @@ mechanisms are not.
 
 ## Goals, in priority order
 
+0. **Physics-based fold navigation with real weight — the flagship direction for this round.**
+   After using the live site, the user specifically asked for swipe navigation driven by genuine
+   spring/momentum physics: the fold tracks the gesture, a hard flick carries through with momentum
+   and can spin/overshoot before settling, motion eases to a natural stop rather than a fixed CSS
+   transition. See direction E below for the full specification — this is not one option among
+   several, it's the direction the user is most excited about and should be evaluated first and
+   given the most weight if Astra has to prioritize within a usage-limited session.
 1. **Make arriving at an object feel like a small discovery**, not just a load. The user
    specifically raised "pixelating the ephemera until you click on it" as one possible direction —
    evaluate it, but the actual goal is the feeling, not that specific mechanic. Any mechanic that
@@ -39,7 +46,8 @@ mechanisms are not.
 2. **Smoother, more confident navigation.** Round 1's movement works but is plain. Look for
    friction points during actual use (side-wall spoilers of upcoming objects, no way to jump back
    to a remembered piece, inspect mode being a dead end you can only exit rather than continue
-   browsing from).
+   browsing from). Direction E above substantially serves this goal too — they're complementary,
+   not competing.
 3. **More visible variation across the 72 rooms.** Currently only an accent color rotates per
    room; the fold/wall treatment is otherwise identical everywhere. Strengthen the sense that this
    is 72 distinct places, not one room redecorated 72 times.
@@ -157,40 +165,158 @@ fallback, deterministic per-room hash) rather than adopting all of them.
 - **Velocity-aware pacing.** Round 1's wheel/swipe handlers already capture delta magnitude and
   timing to debounce input; that same data could drive transition duration/easing instead of being
   discarded after the debounce decision — a fast flick producing a snappier fold, a slow deliberate
-  keypress producing a more deliberate unfold. This is a real, low-cost source of per-step variety
-  that doesn't require new state or violate the determinism rule (it's driven by the live input
-  event, not stored or replayed). Evaluate whether this adds delight or just adds inconsistency
-  before committing to it — test both ways.
+  keypress producing a more deliberate unfold. Superseded by the full physics-based navigation
+  section below if that direction is pursued; kept here as the minimal fallback version if it
+  isn't — even just reusing captured velocity for duration/easing is a real, low-cost improvement
+  on its own.
+
+## E. Physics-based fold navigation (user-prioritized — "I love this direction")
+
+The user, after using the live site, specifically asked for swipe navigation with real weight:
+sophisticated easing, origami/fold physics, spin-on-hard-swipe, and a smooth organic settle rather
+than a fixed-duration transition. This came with an explicit offer to supply old Flash/ActionScript
+physics formulas (spring easing, momentum/friction curves) as reference material if useful — treat
+any such formulas the user provides as **math to reimplement in JS, not code to port directly**;
+ActionScript itself doesn't run in a browser, but the underlying spring-constant/friction/damping
+values translate directly. If the user hasn't supplied anything by the time this is picked up,
+proceed with standard spring/momentum physics (the same family of formulas behind iOS scroll
+physics, Framer Motion's spring, react-spring, etc.) — well-documented, no need to wait.
+
+This is a bigger, more central change than directions A–D and the other motion techniques above —
+treat it as the flagship interaction of round 2 if pursued, not one option among many.
+
+### What "real weight" means here, concretely
+
+- Fold rotation should be driven by a spring simulation (position, velocity, spring stiffness,
+  damping) advancing every frame during the gesture and after release — not a CSS `transition`
+  with a fixed duration and easing curve. A CSS transition can approximate an ease-out but cannot
+  produce genuine momentum (a fast flick traveling further, gesture velocity carrying into the
+  release) or a natural spring settle (slight overshoot and correction) the way a real physics step
+  can.
+- **During the gesture**: the fold should track the pointer/touch 1:1 (or with light resistance
+  near travel limits), not just play a canned animation once a swipe is detected — the user should
+  feel like they're physically turning the page, not triggering a video clip.
+- **On release**: velocity at release time determines what happens next — a slow drag settles back
+  or completes the fold with a gentle ease; a hard flick carries through with momentum, decelerating
+  under friction, potentially overshooting the target room and springing back (the "it spins if you
+  swipe hard enough" effect), then coming to rest. This needs real per-frame simulation
+  (`requestAnimationFrame`, not CSS) to compute correctly — CSS custom properties cannot receive a
+  per-frame numeric velocity input.
+- **Multi-room travel on a hard flick is in scope** (confirmed with the user) — a sufficiently fast
+  swipe can carry past one room into two or three, not just a springier version of a fixed one-room
+  step. This changes round 1's reversibility contract and needs its own definition, not silent
+  reuse of the old one:
+  - Define reversibility for multi-room travel explicitly: a flick that lands on depth `N` must be
+    undoable by a symmetric flick (or equivalent input) back to the exact original depth, facing,
+    and object — not merely "close enough." Land on a whole-number room depth always; never leave
+    the user stopped mid-fold between two rooms.
+  - The physics can carry through several rooms' worth of visual fold motion during one continuous
+    gesture, but the underlying state model should still only ever *commit* to one final integer
+    depth per gesture — avoid needing to retain more than the current three-view window's worth of
+    descriptors even while flying through intermediate ones during the animation. Generate
+    intermediate descriptors transiently for the visual pass-through, discard them once the gesture
+    resolves, exactly as `buildWindow` already does for the settled state.
+- **Spin**: evaluate as a rotational flourish tied to release velocity exceeding some threshold —
+  keep it earned (only on a genuinely hard flick) rather than happening on every interaction, or it
+  stops reading as weight and starts reading as a gimmick.
+
+### Constraints specific to this direction
+
+- No physics/animation library dependency by default (no GSAP, no Matter.js, no react-spring) —
+  hand-rolled spring/friction math in a `requestAnimationFrame` loop is well-understood and keeps
+  the "no new heavy dependency" rule intact. If Astra concludes a small, focused physics utility
+  (not a general engine) is genuinely justified, name the specific tradeoff rather than reaching for
+  one by default.
+- Must still fully respect `prefers-reduced-motion`: reduced-motion users get the existing (or a
+  simplified) instant/crossfade transition, never the spring simulation — this is not optional
+  polish, it's the same accessibility contract round 1 already established for every other motion.
+- Must work across mouse (click-drag or wheel-as-proxy), touch (swipe with real velocity from
+  pointer events), and keyboard (which has no natural "velocity" — define a sensible default, e.g.
+  keyboard always behaves like a moderate, non-hard flick, never triggering multi-room spin).
+- Must not defeat the three-view bounded render invariant even during multi-room fly-through
+  animation — see the reversibility bullet above.
+- Performance: the simulation must stay smooth (60fps target) on mobile GPUs given the existing
+  CSS-perspective paper planes already in play; if combining full spring physics with the existing
+  fold rendering causes jank on real mobile hardware, that's a legitimate reason to simplify (fewer
+  simultaneously animated planes, cheaper per-frame math) rather than a reason to abandon the
+  direction outright — report back with what was tried.
+
+### If the user supplies ActionScript reference material
+
+Read it for the actual formulas (spring constant, damping/friction coefficients, easing curve
+shapes, velocity-to-rotation mapping) and reimplement the logic natively in JS/TypeScript. Do not
+attempt to transpile or directly port ActionScript syntax — the goal is the *feel* the formulas
+were tuned to produce, translated into a `requestAnimationFrame`-driven spring model, not a literal
+code port.
 
 ## Files likely touched
 
 Consistent with round 1's narrow footprint:
 
 - `lib/museum.ts`: extend `RoomDescriptor` with whatever new per-room parameters direction C needs;
-  add any "seen" tracking for direction A; add index/lookup helpers for direction D if pursued.
+  add any "seen" tracking for direction A; add index/lookup helpers for direction D if pursued; add
+  the spring/momentum simulation state and multi-room-commit logic for direction E if pursued
+  (likely its own small module, e.g. `lib/fold-physics.ts`, rather than inlined into `page.tsx`,
+  given its size and how independently testable pure physics math is).
 - `app/page.tsx`: reveal-state handling for direction A, inspect-mode navigation for direction B,
-  drawer UI for direction D if pursued.
-- `app/museum.css`: new visual treatments for A and C; drawer styling for D.
+  drawer UI for direction D if pursued, and replacing/extending the current `navigate` function's
+  fixed-duration `setTimeout` transition with the `requestAnimationFrame`-driven spring loop for
+  direction E.
+- `app/museum.css`: new visual treatments for A and C; drawer styling for D; direction E likely
+  needs its transform values driven from JS per-frame rather than a CSS `transition`, so expect the
+  relevant room/fold rules to move from declarative CSS transitions to JS-set transform values
+  during an active gesture, falling back to the existing CSS transition for reduced-motion.
 - No new route, worker API, backend, or persistence beyond optional client-side "seen" tracking.
 
 ## Validation (in addition to round 1's existing acceptance tests, which must still pass)
 
 - Reduced-motion users get a functional, non-jarring reveal for any new obscure-until-engaged
-  mechanic.
+  mechanic, and get the existing (or simplified) fixed transition rather than the spring simulation
+  for direction E.
 - The three-view render/memory invariant from round 1 still holds — check this explicitly if any
-  new state (seen-objects list, index data) is added; confirm it doesn't retain per-room DOM or
-  grow unbounded over a full walkthrough.
+  new state (seen-objects list, index data, in-flight physics state) is added; confirm it doesn't
+  retain per-room DOM or grow unbounded over a full walkthrough, including during multi-room
+  fly-through animation under direction E.
 - Any new interaction has full keyboard and screen-reader support to the same standard as round 1's
   existing controls (accessible names, visible focus, no dead-end focus traps in a drawer/overview).
 - Confirm on 360px, tablet, and desktop widths again — new UI (drawer, reveal overlay) must not
   break the layouts round 1 already validated.
+- Direction E specifically: a hard flick that travels multiple rooms is exactly reversible (a
+  symmetric flick/input returns to the identical starting depth, facing, and object — see the
+  reversibility bullet in direction E's own section); the fold always comes to rest on a whole-number
+  room depth, never stuck mid-transition; spin only triggers above a real velocity threshold, not on
+  ordinary taps/clicks; performance stays smooth on real mobile hardware, not just desktop dev tools.
+
+## Deployment: round 1 stays live, round 2 ships as a separate preview URL
+
+The user explicitly wants to keep the current round 1 site live and compared against, not
+overwritten — same pattern already used for Circus's `mom-film-site` (`VERSION_LINKS.md` there:
+Version 1 stays at the root, Version 2 previews at `/v2/` until separately approved). Apply the
+same pattern here, in the **same repo**, not a duplicate one:
+
+- Build round 2 on its own branch off `main` (e.g. `redesign/v2-fold-physics` — name it for
+  whatever direction(s) actually get built).
+- Deploy it to a subpath under the existing `gh-pages` branch — `/ephemera-experience/v2/` — instead
+  of replacing what's at the root. The existing `scripts/build-static-export.mjs` already takes a
+  `--base` argument for exactly this kind of path rewriting; extend its usage (or the base value
+  passed to it) to produce output rooted at `/ephemera-experience/v2/` rather than
+  `/ephemera-experience/`, then merge that output into the `gh-pages` branch alongside (not instead
+  of) what's already there at the root.
+- Do not force-push over the existing `gh-pages` root content — this deploy must be additive.
+- Update `VERSION_LINKS.md` (already present in the repo, matching the `mom-film-site` convention)
+  with the new Version 2 preview URL and source branch, keeping the Version 1 (root) entry intact.
+- The root URL (https://brooklynpostcards.github.io/ephemera-experience/) stays Version 1 until the
+  user separately approves replacing it — round 2 being "done" does not mean it goes live at the
+  root automatically.
 
 ## Handoff instruction for Astra
 
 Read this file, `execution-spec.md`, `implementation-plan.md`, and `CONTEXT.md` in this workspace
 first. Then look at the live site and the current `main` branch of
-https://github.com/brooklynpostcards/ephemera-experience. Decide which of directions A–D (or an
-alternative that better serves the stated goals) to pursue, in what order, and report back a short
-plan before writing code — this round is explicitly open for Astra to push back on any of the above
-if something conflicts with what round 1 already learned. If a direction is rejected, say why, so
-the reasoning isn't lost.
+https://github.com/brooklynpostcards/ephemera-experience. Decide which of directions A–E (or an
+alternative that better serves the stated goals) to pursue, in what order — direction E (physics-
+based fold navigation) is the user's top priority and should be evaluated first — and report back a
+short plan before writing code. This round is explicitly open for Astra to push back on any of the
+above if something conflicts with what round 1 already learned. If a direction is rejected, say why,
+so the reasoning isn't lost. Ship round 2 per the deployment section above — a new preview URL
+alongside the existing live site, not a replacement of it.
