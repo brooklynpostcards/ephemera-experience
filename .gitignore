@@ -29,6 +29,9 @@ yarn-error.log*
 # local environment
 .env*
 
+# local Claude Code dev-preview config
+/.claude/
+
 # deployment and generated files
 .vercel
 next-env.d.ts
