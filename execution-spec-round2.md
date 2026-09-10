@@ -308,6 +308,19 @@ user does find and supply old personal reference formulas later, compare against
 adopt whichever tuning constants (friction value, overshoot `s`, spring stiffness) feel better,
 rather than starting from scratch.
 
+### Proprietary source guardrail
+
+The user mentioned Aescripts' "Ease and Wizz" (a commercial, paid After Effects plugin bundling
+its own motion-preset library) as a possible reference point. **Do not use its actual
+implementation, code, preset values, or UI as a source** — it's a licensed proprietary product, not
+free reference material, and reverse-engineering or copying its specific formulas would be copying
+someone else's commercial IP. The general animation *principles* it's built on (overshoot,
+anticipation, bounce, ease families) are standard, decades-old animation vocabulary that's fine to
+draw from in the abstract — same vocabulary the Penner equations above already cover — but nothing
+should be sourced from that plugin specifically. If the user's own found ActionScript snippets turn
+out to be simple/personal scripts (not extracted from a paid tool), those are fine to use as
+reference the normal way this section already describes.
+
 ## Files likely touched
 
 Consistent with round 1's narrow footprint:
