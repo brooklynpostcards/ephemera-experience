@@ -249,6 +249,65 @@ attempt to transpile or directly port ActionScript syntax — the goal is the *f
 were tuned to produce, translated into a `requestAnimationFrame`-driven spring model, not a literal
 code port.
 
+### Reference formulas already gathered (2026-09-10)
+
+Two real formula families cover what "spin if you swipe hard enough" and "organic real weight"
+each need — both are the well-known canonical source material this style of interaction has used
+since actual Flash/AS3 era animation, so there's no need to wait on the user tracking down old
+personal files:
+
+- **Overshoot/spin shape — Robert Penner's `easeOutBack` and `easeOutElastic`** (the original
+  source of these curves; ubiquitous in every modern animation library because of it). Already
+  fetched into plain JS (from a verified port at `github.com/bcherny/penner`, not paraphrased):
+
+  ```js
+  // easeOutBack — the overshoot-then-settle curve for a hard-flick spring-back
+  function easeOutBack(t, b, c, d, s = 1.70158) {
+    return c * ((t = t / d - 1) * t * ((s + 1) * t + s) + 1) + b;
+  }
+
+  // easeOutElastic — a springier, multi-wobble settle if a single overshoot isn't enough
+  function easeOutElastic(t, b, c, d) {
+    let a = c, p = d * 0.3, s;
+    if (t === 0) return b;
+    if ((t /= d) === 1) return b + c;
+    if (a < Math.abs(c)) { a = c; s = p / 4; }
+    else { s = p / (2 * Math.PI) * Math.asin(c / a); }
+    return a * Math.pow(2, -10 * t) * Math.sin((t * d - s) * (2 * Math.PI) / p) + c + b;
+  }
+  // t = elapsed time, b = start value, c = change in value, d = duration, s = overshoot amount
+  ```
+
+  These are fixed-duration curves, not per-frame velocity simulations — useful directly for the
+  release/settle phase (once release velocity has picked a target depth and an overshoot amount),
+  less suited to the drag-tracking phase, which needs the model below instead.
+
+- **Momentum/friction shape — the standard velocity-decay model** used across essentially every
+  "throw and it coasts to a stop" interaction (iOS scroll physics, drag-and-throw AS3 tutorials,
+  etc.), same shape regardless of era or platform:
+
+  ```js
+  // Per animation frame, after release at some initial velocity:
+  velocity *= friction;        // friction constant, e.g. 0.92–0.97 — tune by feel
+  position += velocity;
+  if (Math.abs(velocity) < STOP_THRESHOLD) {
+    // hand off to easeOutBack/easeOutElastic above to settle exactly on the target room
+  }
+  ```
+
+  Use this for the coast phase after release velocity is known (from pointer/touch delta ÷ time),
+  and use it to decide *how far* the flick should carry (higher release velocity → more frames of
+  coast before crossing the stop threshold → more rooms traveled) before handing off to the
+  overshoot easing above for the final settle onto a whole-number room depth.
+
+Together: **drag** (1:1 tracking) → **release** (velocity computed from recent pointer deltas) →
+**coast** (friction-decay loop determines how many rooms are crossed) → **settle** (`easeOutBack`/
+`easeOutElastic` brings it to rest exactly on the resolved target depth, with the overshoot/spin
+only visible here). This is a complete, implementable model without needing any AS3 files — if the
+user does find and supply old personal reference formulas later, compare against this baseline and
+adopt whichever tuning constants (friction value, overshoot `s`, spring stiffness) feel better,
+rather than starting from scratch.
+
 ## Files likely touched
 
 Consistent with round 1's narrow footprint:
