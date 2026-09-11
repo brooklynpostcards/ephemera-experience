@@ -5,18 +5,18 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Maximize2, X } from 'lucide-
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
-  captureReleaseVelocity, resistDrag, resolveRelease, startFold, stepFold,
+  captureReleaseVelocity, getFoldWindow, resistDrag, resolveRelease, startFold, stepFold,
   type FoldConfig, type FoldReleaseCapture, type FoldReleasePlan, type FoldSample, type FoldState,
 } from '@/lib/fold-physics';
 import { buildWindow, describeRoom, EXHIBITS, FACES, INITIAL, move, type Action, type Position, type Room } from '@/lib/museum';
 
 type DragIntent = 'pending' | 'walk' | 'turn';
 
-// Recorded starting values; one-room release integration comes in Tasks 15–17.
+// Recorded starting values; high-velocity releases are explicitly capped at three rooms.
 const FOLD_CONFIG: FoldConfig = Object.freeze({
   sampleWindowSeconds: 0.1, maxSamples: 16,
   maxVelocityRoomsPerSecond: 8, decayPerSecond: 4.5,
-  maxTravelRooms: 1, multiRoomVelocity: 3,
+  maxTravelRooms: 3, multiRoomVelocity: 3,
   dragLimitRooms: 1, dragResistanceRooms: 0.15,
   spinVelocity: 5.5, spinFullVelocity: 8, stepVelocity: 1.5,
   coastExitVelocity: 0.35, coastMaxSeconds: 0.32,
@@ -50,6 +50,13 @@ type FoldMotion = {
   accumulatorSeconds: number;
   lastTimeSeconds: number;
   firstFrame: boolean;
+  anchorDelta: number;
+};
+
+/** Render-only integer window; never becomes settled world state mid-flight. */
+type FoldView = {
+  readonly origin: Readonly<Position>;
+  readonly anchorDelta: number;
 };
 
 type PendingRelease = {
@@ -63,7 +70,7 @@ const MAX_ACCUMULATED_SECONDS = 0.05;
 const LONG_FRAME_GAP_SECONDS = 0.25;
 
 /** Direct, bounded writes to the three existing views; no layout reads. */
-function paintDrag(element: HTMLDivElement, offsetRooms: number | null) {
+function paintDrag(element: HTMLDivElement, offsetRooms: number | null, originDepth?: number) {
   for (const room of element.querySelectorAll<HTMLElement>('.museum-room')) {
     const left = room.querySelector<HTMLElement>('.paper-left');
     const right = room.querySelector<HTMLElement>('.paper-right');
@@ -74,7 +81,9 @@ function paintDrag(element: HTMLDivElement, offsetRooms: number | null) {
       right?.style.removeProperty('transform');
       continue;
     }
-    const relative = Number(room.dataset.offset) - offsetRooms;
+    // Absolute descriptor depth stays valid even while an anchor render is pending.
+    const relative = (originDepth === undefined ? Number(room.dataset.offset)
+      : Number(room.dataset.depth) - originDepth) - offsetRooms;
     room.style.transform = `translateX(${135 * relative}%) translateZ(${-340 * Math.abs(relative)}px) rotateY(${20 * relative}deg)`;
     room.style.opacity = String(Math.max(0, Math.min(1, (1.5 - Math.abs(relative)) * 2)));
     // A small crease rotation gives the paper leaves the gesture's handedness.
@@ -96,6 +105,7 @@ function Artwork({ room, priority = false }: { room: Room; priority?: boolean })
 
 export default function Museum() {
   const [position, setPosition] = useState(INITIAL);
+  const [foldView, setFoldView] = useState<FoldView | null>(null);
   const [action, setAction] = useState<Action | 'idle' | 'dragging'>('idle');
   const [inspecting, setInspecting] = useState(false);
   const [hasMoved, setHasMoved] = useState(false);
@@ -115,7 +125,9 @@ export default function Museum() {
   const mounted = useRef(true);
   const suppressClick = useRef(false);
   const current = describeRoom(position);
-  const rooms = buildWindow(position);
+  const rooms = buildWindow(foldView
+    ? { ...foldView.origin, depth: foldView.origin.depth + foldView.anchorDelta }
+    : position);
 
   // Finish against the captured origin once; keep the DOM/busy ownership until
   // React has applied the new integer room roles, then clean up before paint.
@@ -127,6 +139,7 @@ export default function Museum() {
     foldMotion.current = null;
     pendingRelease.current = null;
     completionPending.current = true;
+    setFoldView(null);
     const delta = motion.state.plan.targetDelta;
     if (delta !== 0) {
       setPosition({ ...motion.origin, depth: motion.origin.depth + delta });
@@ -136,6 +149,11 @@ export default function Museum() {
   }, []);
 
   useLayoutEffect(() => {
+    const motion = foldMotion.current;
+    if (motion && stage.current) {
+      // Read the latest simulation ref, not the progress that requested this render.
+      paintDrag(stage.current, motion.state.offsetRooms, motion.origin.depth);
+    }
     if (!completionPending.current || action !== 'idle') return;
     completionPending.current = false;
     if (stage.current) {
@@ -146,10 +164,11 @@ export default function Museum() {
       stage.current.removeAttribute('data-fold-drag');
     }
     busy.current = false;
-  }, [position, action]);
+  }, [position, action, foldView]);
 
   const startMotion = useCallback((origin: Readonly<Position>, plan: FoldReleasePlan) => {
     const generation = ++foldGeneration.current;
+    const { anchorDelta } = getFoldWindow(plan.startOffsetRooms);
     foldMotion.current = {
       generation,
       origin,
@@ -157,12 +176,14 @@ export default function Museum() {
       accumulatorSeconds: 0,
       lastTimeSeconds: performance.now() / 1000,
       firstFrame: true,
+      anchorDelta,
     };
+    setFoldView({ origin, anchorDelta });
     busy.current = true;
     setAction('dragging');
     if (stage.current) {
       stage.current.setAttribute('data-fold-drag', '');
-      paintDrag(stage.current, plan.startOffsetRooms);
+      paintDrag(stage.current, plan.startOffsetRooms, origin.depth);
       stage.current.focus({ preventScroll: true });
     }
     const tick = (timestampMilliseconds: number) => {
@@ -191,10 +212,15 @@ export default function Museum() {
         motion.accumulatorSeconds = Math.max(0, motion.accumulatorSeconds - FIXED_STEP_SECONDS);
         steps += 1;
       }
-      if (stage.current) paintDrag(stage.current, motion.state.offsetRooms);
+      if (stage.current) paintDrag(stage.current, motion.state.offsetRooms, motion.origin.depth);
       if (motion.state.phase === 'done') {
         finishMotion(generation);
       } else {
+        const nextAnchor = getFoldWindow(motion.state.offsetRooms).anchorDelta;
+        if (nextAnchor !== motion.anchorDelta) {
+          motion.anchorDelta = nextAnchor;
+          setFoldView({ origin: motion.origin, anchorDelta: nextAnchor });
+        }
         foldFrame.current = requestAnimationFrame(tick);
       }
     };
@@ -459,7 +485,7 @@ export default function Museum() {
               const active = room.offset === 0;
               return (
                 <section key={room.key} className={`museum-room room-${active ? 'current' : room.offset < 0 ? 'previous' : 'next'}`}
-                  data-room={room.number} data-fold={room.fold} data-offset={room.offset}
+                  data-room={room.number} data-fold={room.fold} data-offset={room.offset} data-depth={room.depth}
                   aria-hidden={active ? undefined : true} inert={!active || action === 'dragging'}
                   style={{ '--room-accent': room.accent } as CSSProperties}>
                   <div className="paper-left" aria-hidden="true"><span>FOLD<b>{room.number}</b></span></div>
@@ -468,12 +494,10 @@ export default function Museum() {
                   <div className="paper-back">
                     <div className="wall-meta" aria-hidden="true"><span>{String(room.index + 1).padStart(2, '0')} / {EXHIBITS.length}</span><span>FOUND & KEPT</span></div>
                     <div className="exhibit-mount"><span className="mount-tape" aria-hidden="true" />
-                      {active ? (
-                        <button ref={frame} className="artwork-frame" onClick={() => inspect(true)} aria-label={`Inspect ${room.title}`} disabled={action !== 'idle'}>
-                          {inspecting ? <span className="frame-empty" /> : <Artwork key={room.src} room={room} priority />}
-                          <span className="inspect-cue"><Maximize2 size={15} aria-hidden="true" /> Look closer</span>
-                        </button>
-                      ) : <div className="artwork-frame"><Artwork key={room.src} room={room} /></div>}
+                      <button ref={active ? frame : undefined} className="artwork-frame" onClick={() => inspect(true)} aria-label={`Inspect ${room.title}`} disabled={!active || action !== 'idle'}>
+                        {active && inspecting ? <span className="frame-empty" /> : <Artwork key={room.src} room={room} priority={active} />}
+                        <span className="inspect-cue"><Maximize2 size={15} aria-hidden="true" /> Look closer</span>
+                      </button>
                       <div className="accession-slip"><span>OBJECT {String(room.index + 1).padStart(2, '0')}</span><h2>{room.title}</h2></div>
                     </div><span className="fold-corner" aria-hidden="true" />
                   </div>

@@ -141,6 +141,16 @@ for (const [name, input, target] of cases) {
   console.log(`PASS ${name}: target ${target}, ${reference.steps} fixed steps; 30/60/120Hz identical`);
 }
 
+// The threshold changes the allowed target range, not the projected-distance law.
+for (const sign of [-1, 1]) {
+  assert.equal(resolveRelease(pointer(sign, sign * (config.multiRoomVelocity - 0.001)), config).targetDelta, sign);
+  assert.equal(resolveRelease(pointer(sign, sign * config.multiRoomVelocity), config).targetDelta, sign * 2);
+  assert.equal(resolveRelease(pointer(sign, sign * config.maxVelocityRoomsPerSecond),
+    { ...config, maxTravelRooms: 2 }).targetDelta, sign * 2);
+  assert.equal(resolveRelease(pointer(sign, sign * config.maxVelocityRoomsPerSecond), config).targetDelta, sign * 3);
+}
+console.log('PASS explicit multi-room threshold and symmetric two/three-room caps');
+
 // Matched opposite inputs restore integer depth, including half ties and zero.
 for (const x of [0, 0.2, 0.5, 0.65, 1, 1.14]) {
   for (const v of [-8, -5, -3, -0.5, 0, 0.5, 3, 5, 8]) {

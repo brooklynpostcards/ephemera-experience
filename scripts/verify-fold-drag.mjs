@@ -145,12 +145,48 @@ try {
     const identity = (element) => [element.dataset.room, element.dataset.fold,
       element.style.getPropertyValue('--room-accent'), element.querySelector('h2').textContent,
       element.querySelector('img')?.getAttribute('src')];
-    const expectedRoom = await page.locator('.museum-room[data-offset="' + delta + '"]').evaluate(identity);
+    const beforeIdentity = await page.locator('.room-current').evaluate(identity);
+    // Before motion, only adjacent destinations have a preview in the idle window.
+    const expectedRoom = Math.abs(delta) <= 1
+      ? await page.locator('.museum-room[data-offset="' + delta + '"]').evaluate(identity)
+      : null;
     await page.evaluate(() => { window.__foldDepthChanges = []; });
     await begin();
     await page.locator('.stage').evaluate((element, gesture) => {
       const pointerId = window.__foldPointerId;
       const startTime = window.__foldPointerTime;
+      const settledDepth = Number(document.querySelector('.museum').dataset.depth);
+      const announcement = document.querySelector('[role="status"]').textContent;
+      let previousNodes = new Map([...element.querySelectorAll('.museum-room')].map((room) =>
+        [Number(room.dataset.depth), { room, image: room.querySelector('img') }]));
+      window.__foldWindows = [];
+      const windowObserver = new MutationObserver(() => {
+        if (!element.hasAttribute('data-fold-drag')) return;
+        const rooms = [...element.querySelectorAll('.museum-room')];
+        const center = rooms.find((room) => room.dataset.offset === '0');
+        const anchor = Number(center?.dataset.depth) - settledDepth;
+        const rows = rooms.map((room) => {
+          const depth = Number(room.dataset.depth);
+          const translation = room.style.transform.match(/translateX\(([-.\de+]+)%\)/i);
+          const relative = translation ? Number(translation[1]) / 135 : NaN;
+          const previous = previousNodes.get(depth);
+          return { depth, offset: Number(room.dataset.offset), relative,
+            progress: depth - settledDepth - relative,
+            stable: !previous || (previous.room === room && previous.image === room.querySelector('img')),
+            opacity: Number(room.style.opacity),
+            transition: getComputedStyle(room).transitionDuration };
+        });
+        window.__foldWindows.push({ anchor, rows,
+          images: document.querySelectorAll('img').length,
+          focused: document.activeElement === element,
+          announced: document.querySelector('[role="status"]').textContent === announcement });
+        previousNodes = new Map(rooms.map((room) =>
+          [Number(room.dataset.depth), { room, image: room.querySelector('img') }]));
+      });
+      // Observe committed window/role mutations, after layout effects have painted.
+      windowObserver.observe(element, { childList: true, subtree: true, attributes: true,
+        attributeFilter: ['class', 'data-depth', 'data-offset'] });
+      window.__foldWindowObserver = windowObserver;
       const send = (type, fraction, milliseconds) => {
         const event = new PointerEvent(type, { bubbles: true, pointerId, pointerType: 'mouse',
           isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1,
@@ -190,16 +226,39 @@ try {
     await page.locator('.stage.action-idle').waitFor({ timeout: 3000 }); await pause();
     const after = await snap();
     const audit = await page.evaluate(() => window.__foldAudit);
+    const windows = await page.evaluate(() => {
+      window.__foldWindowObserver.disconnect();
+      return window.__foldWindows;
+    });
     check(name + ': exact integer destination and one-or-zero commit', Number.isInteger(after.depth)
       && after.depth === before.depth + delta
       && JSON.stringify(await page.evaluate(() => window.__foldDepthChanges)) === JSON.stringify(delta ? [after.depth] : []));
-    check(name + ': settled facing and deterministic room identity preserved', after.facing === before.facing
-      && JSON.stringify(await page.locator('.room-current').evaluate(identity)) === JSON.stringify(expectedRoom));
+    const afterIdentity = await page.locator('.room-current').evaluate(identity);
+    check(name + ': settled facing and available preview identity agree', after.facing === before.facing
+      && (expectedRoom === null || JSON.stringify(afterIdentity) === JSON.stringify(expectedRoom)));
     check(name + ': every settling frame is gated at the captured origin', audit.some((frame) => frame.busy)
       && audit.every((frame) => Number.isInteger(frame.depth) && frame.facing === before.facing
         && (frame.busy ? frame.gated && frame.depth === before.depth : frame.depth === after.depth)));
     check(name + ': finite three-view window throughout', audit.every((frame) => frame.finite && frame.rooms === 3 && frame.images <= 3)
       && after.rooms === 3 && after.images === 3);
+    check(name + ': integer window follows continuous progress before paint', windows.length > 0
+      && windows.every((sample) => Number.isInteger(sample.anchor) && sample.rows.length === 3
+        && sample.rows.every((row, index) => row.offset === index - 1
+          && row.depth === before.depth + sample.anchor + row.offset
+          && Number.isFinite(row.relative)
+          && Math.abs(row.progress - sample.rows[0].progress) < 0.00001
+          && Math.abs(sample.anchor - row.progress) <= 0.50001
+          && row.transition === '0s')));
+    check(name + ': swaps retain room/image nodes, focus, and announcement',
+      windows.every((sample) => sample.rows.every((row) => row.stable)
+        && sample.images <= 3 && sample.focused && sample.announced));
+    check(name + ': window never fades entirely out during travel',
+      windows.every((sample) => sample.rows.some((row) => row.opacity === 1)));
+    if (Math.abs(delta) > 1) {
+      check(name + ': renders every intermediate integer anchor',
+        Array.from({ length: Math.abs(delta) }, (_, index) => Math.sign(delta) * (index + 1))
+          .every((anchor) => windows.some((sample) => sample.anchor === anchor)));
+    }
     check(name + ': styles and controls restored without inspection', await page.locator('.stage').evaluate((element) =>
       !element.hasAttribute('data-fold-drag')
       && [...element.querySelectorAll('.museum-room, .paper-left, .paper-right')].every((node) => node.style.transform === '')
@@ -208,6 +267,7 @@ try {
       && new DOMMatrixReadOnly(getComputedStyle(element.querySelector('.room-current')).transform).isIdentity)
       && await page.locator('.movement button').evaluateAll((buttons) => buttons.every((button) => !button.disabled))
       && await page.getByRole('dialog').count() === 0);
+    return { before, after, beforeIdentity, afterIdentity };
   }
   check('expanded releases start at a nonzero integer origin', landed.depth !== 0 && Number.isInteger(landed.depth));
   await verifyRelease('held short forward', 0.2, true, 0);
@@ -218,6 +278,16 @@ try {
   await verifyRelease('ordinary backward', -0.7, true, -1);
   check('paired releases return exactly to the nonzero origin', (await snap()).depth === landed.depth
     && (await snap()).facing === landed.facing);
+  const twoForward = await verifyRelease('high release forward two rooms', 0.65, false, 2);
+  const twoBackward = await verifyRelease('high release backward two rooms', -0.65, false, -2);
+  check('two-room inverse restores exact origin and descriptor',
+    twoBackward.after.depth === twoForward.before.depth
+    && JSON.stringify(twoBackward.afterIdentity) === JSON.stringify(twoForward.beforeIdentity));
+  const threeForward = await verifyRelease('maximum release forward three rooms', 1, false, 3);
+  const threeBackward = await verifyRelease('maximum release backward three rooms', -1, false, -3);
+  check('three-room inverse restores exact origin and descriptor',
+    threeBackward.after.depth === threeForward.before.depth
+    && JSON.stringify(threeBackward.afterIdentity) === JSON.stringify(threeForward.beforeIdentity));
   const beforeInterruptedPending = await snap();
   await begin(); await page.mouse.move(x, y - 5); await pause();
   await page.keyboard.press('ArrowUp'); await page.waitForTimeout(650);
