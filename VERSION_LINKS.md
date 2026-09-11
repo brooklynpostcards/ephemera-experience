@@ -2,11 +2,12 @@
 
 - [Version 1: current public site](https://brooklynpostcards.github.io/ephemera-experience/)
 - [Version 1 source (main branch)](https://github.com/brooklynpostcards/ephemera-experience)
+- [Version 2: Task 20 preview](https://brooklynpostcards.github.io/ephemera-experience/v2/)
+- [Version 2 source checkpoint (`b18c9b0`)](https://github.com/brooklynpostcards/ephemera-experience/tree/redesign/v2-fold-physics)
 - [Deployed build source (gh-pages branch)](https://github.com/brooklynpostcards/ephemera-experience/tree/gh-pages)
 
-Version 2 (round 2, physics-based fold navigation and related directions — see
-`execution-spec-round2.md`) is not built yet. Once it exists, add its preview link here rather than
-replacing the Version 1 entry above — see "Deploying round 2" below for the pattern to follow.
+Version 2 is still in progress. The public link is a Task 20 direction/feel checkpoint for the
+physics-based fold navigation, not a finished or approved replacement for Version 1.
 
 ## What's deployed
 
@@ -17,9 +18,9 @@ root-absolute asset paths to work under GitHub Pages' `/ephemera-experience/`
 subpath.
 
 - `main`: source code, editable and reviewable normally.
-- `gh-pages`: build output only. Currently holds Version 1's build at the root
-  path (`/ephemera-experience/`) — don't hand-edit it, and see the note below
-  before pushing a new version to it.
+- `gh-pages`: build output only. Holds Version 1 at the root path
+  (`/ephemera-experience/`) and the Task 20 Version 2 preview under `/v2/`.
+  Don't hand-edit either deployment.
 
 ## To redeploy Version 1 after a change on `main`
 
