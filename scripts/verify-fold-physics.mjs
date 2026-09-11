@@ -1,7 +1,7 @@
 // Pure, dependency-free checks. Run: node --experimental-strip-types scripts/verify-fold-physics.mjs
 import assert from 'node:assert/strict';
 import {
-  resolveRelease, startFold, stepFold, getFoldWindow,
+  captureReleaseVelocity, resolveRelease, startFold, stepFold, getFoldWindow,
 } from '../lib/fold-physics.ts';
 
 const h = 1 / 120;
@@ -19,6 +19,52 @@ const config = Object.freeze({
 const pointer = (x, v) => ({ kind: 'pointer', offsetRooms: x, velocityRoomsPerSecond: v });
 const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-12,
   `${actual} != ${expected}`);
+
+// Pointer-up owns the final raw sample; normalization is bounded, immutable, and symmetric.
+const forwardCapture = captureReleaseVelocity([
+  { timeSeconds: 1, offsetRooms: 0 },
+  { timeSeconds: 1.04, offsetRooms: 0.2 },
+], { timeSeconds: 1.05, offsetRooms: 0.3 }, config);
+const backwardCapture = captureReleaseVelocity([
+  { timeSeconds: 1, offsetRooms: 0 },
+  { timeSeconds: 1.04, offsetRooms: -0.2 },
+], { timeSeconds: 1.05, offsetRooms: -0.3 }, config);
+assert.ok(forwardCapture.velocityRoomsPerSecond > 0);
+close(backwardCapture.velocityRoomsPerSecond, -forwardCapture.velocityRoomsPerSecond);
+assert.ok(Number.isFinite(forwardCapture.velocityRoomsPerSecond));
+assert.ok(Object.isFrozen(forwardCapture) && Object.isFrozen(forwardCapture.samples));
+const heldCapture = captureReleaseVelocity([
+  { timeSeconds: 1, offsetRooms: 0 },
+  { timeSeconds: 1.04, offsetRooms: 0.4 },
+], { timeSeconds: 1.2, offsetRooms: 0.4 }, config);
+assert.equal(heldCapture.velocityRoomsPerSecond, 0);
+assert.deepEqual(heldCapture.samples, [{ timeSeconds: 1.2, offsetRooms: 0.4 }]);
+const duplicateCapture = captureReleaseVelocity([
+  { timeSeconds: 1, offsetRooms: 0 },
+  { timeSeconds: 1.05, offsetRooms: 100 },
+  { timeSeconds: 1.05, offsetRooms: 200 },
+  { timeSeconds: NaN, offsetRooms: Infinity },
+], { timeSeconds: 1.05, offsetRooms: 0.5 }, { ...config, maxVelocityRoomsPerSecond: 4 });
+assert.equal(duplicateCapture.samples.length, 2);
+assert.deepEqual(duplicateCapture.samples.at(-1), { timeSeconds: 1.05, offsetRooms: 0.5 });
+assert.equal(duplicateCapture.velocityRoomsPerSecond, 4);
+const crowdedCapture = captureReleaseVelocity(
+  Array.from({ length: 30 }, (_, index) => ({
+    timeSeconds: 2 + index / 1000,
+    offsetRooms: index / 100,
+  })),
+  { timeSeconds: 2.03, offsetRooms: 0.3 },
+  config,
+);
+assert.equal(crowdedCapture.samples.length, config.maxSamples);
+assert.deepEqual(crowdedCapture.samples.at(-1), { timeSeconds: 2.03, offsetRooms: 0.3 });
+for (const releaseSample of [
+  { timeSeconds: NaN, offsetRooms: 0 },
+  { timeSeconds: 1, offsetRooms: Infinity },
+]) {
+  assert.throws(() => captureReleaseVelocity([], releaseSample, config), RangeError);
+}
+console.log('PASS bounded pointer-up velocity capture: fresh, held, symmetric, duplicate, finite');
 
 function invariant(state, plan, tuning = config) {
   assert.deepEqual(state.plan, plan);

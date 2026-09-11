@@ -58,6 +58,9 @@ button.artwork-frame:hover .inspect-cue,button.artwork-frame:focus-visible .insp
 .action-back .room-previous { transform:translateX(0) translateZ(0) rotateY(0); z-index:3; }
 .action-left .room-current { transform:rotateY(75deg); transform-origin:left; transition-duration:320ms; }
 .action-right .room-current { transform:rotateY(-75deg); transform-origin:right; transition-duration:320ms; }
+/* Direct pointer displacement must not chase a 500ms CSS transition. */
+.stage[data-fold-drag] .museum-room { transition:none; }
+.stage.action-dragging { cursor:grabbing; user-select:none; }
 .navigation-area { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:20px; padding:6px clamp(20px,4vw,64px) 25px; z-index:2; }
 .navigation-note { margin:0; font-size:16px; line-height:1.5; }
 .navigation-note em { font-family:Georgia,serif; color:var(--muted-ink); }
@@ -110,7 +113,12 @@ button.artwork-frame:hover .inspect-cue,button.artwork-frame:focus-visible .insp
   .fold-corner { background:linear-gradient(135deg,#d0d1c2 49%,#d8dacb 50%); }
 }
 @media(prefers-reduced-motion:reduce) {
-  .museum-room { transition:none !important; }.stage[class*=action-]:not(.action-idle) .scene { animation:quiet-step 160ms ease; }
+  .museum-room { transition:none !important; }.stage[class*=action-]:not(.action-idle):not(.action-dragging) .scene { animation:quiet-step 160ms ease; }
+  .stage[data-fold-drag] .museum-room { transform:none !important; opacity:1 !important; }
+  .stage[data-fold-drag] .room-previous { transform:translateX(-135%) translateZ(-340px) rotateY(-20deg) !important; }
+  .stage[data-fold-drag] .room-next { transform:translateX(135%) translateZ(-340px) rotateY(20deg) !important; }
+  .stage[data-fold-drag] .paper-left { transform:rotateY(-40deg) !important; }
+  .stage[data-fold-drag] .paper-right { transform:rotateY(40deg) !important; }
   .action-forward .room-current,.action-back .room-current,.action-left .room-current,.action-right .room-current { transform:none; }
   .action-forward .room-next { transform:translateX(135%) translateZ(-340px) rotateY(20deg); z-index:0; }.action-back .room-previous { transform:translateX(-135%) translateZ(-340px) rotateY(-20deg); z-index:0; }
   button.artwork-frame:hover { transform:none; }.artwork-frame,.hint,.inspect-cue { transition:none; }[data-slot=dialog-overlay] { animation:none; }

@@ -18,6 +18,14 @@ export type FoldSample = {
   readonly offsetRooms: number;
 };
 
+/** Bounded raw samples and their finite release slope, captured once on pointer-up. */
+export type FoldReleaseCapture = {
+  readonly samples: readonly FoldSample[];
+  readonly offsetRooms: number;
+  readonly velocityRoomsPerSecond: number;
+  readonly releaseTimeSeconds: number;
+};
+
 export type FoldInput =
   | {
       readonly kind: 'pointer';
@@ -193,6 +201,54 @@ export function estimateReleaseVelocity(
   const velocity = covariance / timeVariance;
   const limit = config.maxVelocityRoomsPerSecond;
   return Math.max(-limit, Math.min(limit, velocity));
+}
+
+/**
+ * Append or replace the raw pointer-up sample, normalize the bounded recent
+ * buffer, and calculate one immutable velocity capture for the controller.
+ */
+export function captureReleaseVelocity(
+  samples: readonly FoldSample[],
+  releaseSample: FoldSample,
+  config: FoldConfig,
+): FoldReleaseCapture {
+  if (!Number.isFinite(releaseSample.timeSeconds)
+      || !Number.isFinite(releaseSample.offsetRooms)) {
+    throw new RangeError('release sample time and offset must be finite');
+  }
+  // Validate sampling configuration before using it to bound the returned buffer.
+  estimateReleaseVelocity([releaseSample], releaseSample.timeSeconds, config);
+  const cutoff = releaseSample.timeSeconds - config.sampleWindowSeconds;
+  const ordered: FoldSample[] = [];
+  for (const sample of samples) {
+    if (!Number.isFinite(sample.timeSeconds) || !Number.isFinite(sample.offsetRooms)) continue;
+    if (sample.timeSeconds < cutoff || sample.timeSeconds > releaseSample.timeSeconds) continue;
+    const previous = ordered.at(-1);
+    if (previous && sample.timeSeconds < previous.timeSeconds) continue;
+    if (previous && sample.timeSeconds === previous.timeSeconds) {
+      ordered[ordered.length - 1] = sample;
+    } else {
+      ordered.push(sample);
+    }
+  }
+  const latest = ordered.at(-1);
+  if (latest?.timeSeconds === releaseSample.timeSeconds) {
+    ordered[ordered.length - 1] = releaseSample;
+  } else {
+    ordered.push(releaseSample);
+  }
+  const bounded = Object.freeze(ordered.slice(-config.maxSamples).map((sample) => Object.freeze({ ...sample })));
+  const velocityRoomsPerSecond = estimateReleaseVelocity(
+    bounded,
+    releaseSample.timeSeconds,
+    config,
+  );
+  return Object.freeze({
+    samples: bounded,
+    offsetRooms: releaseSample.offsetRooms,
+    velocityRoomsPerSecond,
+    releaseTimeSeconds: releaseSample.timeSeconds,
+  });
 }
 
 /** Apply odd, asymptotic resistance after the direct one-room drag range. */

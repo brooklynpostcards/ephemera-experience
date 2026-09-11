@@ -1,10 +1,88 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Maximize2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-import { buildWindow, describeRoom, EXHIBITS, FACES, INITIAL, move, type Action, type Room } from '@/lib/museum';
+import {
+  captureReleaseVelocity, resistDrag, resolveRelease, startFold, stepFold,
+  type FoldConfig, type FoldReleaseCapture, type FoldReleasePlan, type FoldSample, type FoldState,
+} from '@/lib/fold-physics';
+import { buildWindow, describeRoom, EXHIBITS, FACES, INITIAL, move, type Action, type Position, type Room } from '@/lib/museum';
+
+type DragIntent = 'pending' | 'walk' | 'turn';
+
+// Recorded starting values; one-room release integration comes in Tasks 15–17.
+const FOLD_CONFIG: FoldConfig = Object.freeze({
+  sampleWindowSeconds: 0.1, maxSamples: 16,
+  maxVelocityRoomsPerSecond: 8, decayPerSecond: 4.5,
+  maxTravelRooms: 1, multiRoomVelocity: 3,
+  dragLimitRooms: 1, dragResistanceRooms: 0.15,
+  spinVelocity: 5.5, spinFullVelocity: 8, stepVelocity: 1.5,
+  coastExitVelocity: 0.35, coastMaxSeconds: 0.32,
+  springFrequencyHz: 3, normalDampingRatio: 1, hardDampingRatio: 0.82,
+  maxVisualOvershootRooms: 0.18, positionEpsilonRooms: 0.001,
+  velocityEpsilon: 0.01, maxReleaseSeconds: 2,
+});
+
+type ActiveDrag = {
+  readonly pointerId: number;
+  readonly captureTarget: Element;
+  readonly startX: number;
+  readonly startY: number;
+  /** Frozen at pointer-down; pixels representing one room of vertical travel. */
+  readonly roomSpanPixels: number;
+  /** Settled integer world state captured once for the entire gesture. */
+  readonly origin: Readonly<Position>;
+  readonly intent: DragIntent;
+  /** Raw normalized gesture distance, used for velocity samples. */
+  readonly rawOffsetRooms: number;
+  /** Resisted displacement for the eventual fold rendering. */
+  readonly visualOffsetRooms: number;
+  /** Bounded recent samples; the pure estimator applies time-window filtering. */
+  readonly samples: readonly FoldSample[];
+};
+
+type FoldMotion = {
+  readonly generation: number;
+  readonly origin: Readonly<Position>;
+  state: FoldState;
+  accumulatorSeconds: number;
+  lastTimeSeconds: number;
+  firstFrame: boolean;
+};
+
+type PendingRelease = {
+  readonly origin: Readonly<Position>;
+  readonly visualOffsetRooms: number;
+  readonly capture: FoldReleaseCapture;
+};
+
+const FIXED_STEP_SECONDS = 1 / 120;
+const MAX_ACCUMULATED_SECONDS = 0.05;
+const LONG_FRAME_GAP_SECONDS = 0.25;
+
+/** Direct, bounded writes to the three existing views; no layout reads. */
+function paintDrag(element: HTMLDivElement, offsetRooms: number | null) {
+  for (const room of element.querySelectorAll<HTMLElement>('.museum-room')) {
+    const left = room.querySelector<HTMLElement>('.paper-left');
+    const right = room.querySelector<HTMLElement>('.paper-right');
+    if (offsetRooms === null) {
+      room.style.removeProperty('transform');
+      room.style.removeProperty('opacity');
+      left?.style.removeProperty('transform');
+      right?.style.removeProperty('transform');
+      continue;
+    }
+    const relative = Number(room.dataset.offset) - offsetRooms;
+    room.style.transform = `translateX(${135 * relative}%) translateZ(${-340 * Math.abs(relative)}px) rotateY(${20 * relative}deg)`;
+    room.style.opacity = String(Math.max(0, Math.min(1, (1.5 - Math.abs(relative)) * 2)));
+    // A small crease rotation gives the paper leaves the gesture's handedness.
+    const crease = offsetRooms * (room.dataset.fold === 'left' ? 1 : -1) * 32;
+    if (left) left.style.transform = `rotateY(${-40 + crease}deg)`;
+    if (right) right.style.transform = `rotateY(${40 + crease}deg)`;
+  }
+}
 
 function Artwork({ room, priority = false }: { room: Room; priority?: boolean }) {
   const [failed, setFailed] = useState(false);
@@ -18,7 +96,7 @@ function Artwork({ room, priority = false }: { room: Room; priority?: boolean })
 
 export default function Museum() {
   const [position, setPosition] = useState(INITIAL);
-  const [action, setAction] = useState<Action | 'idle'>('idle');
+  const [action, setAction] = useState<Action | 'idle' | 'dragging'>('idle');
   const [inspecting, setInspecting] = useState(false);
   const [hasMoved, setHasMoved] = useState(false);
   const stage = useRef<HTMLDivElement>(null);
@@ -27,19 +105,145 @@ export default function Museum() {
   const inspection = useRef(false);
   const reduced = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pointer = useRef<{ x: number; y: number; id: number } | null>(null);
+  const activeDrag = useRef<ActiveDrag | null>(null);
+  // Consumed once by the one-room release controller.
+  const pendingRelease = useRef<PendingRelease | null>(null);
+  const foldMotion = useRef<FoldMotion | null>(null);
+  const foldFrame = useRef<number | null>(null);
+  const completionPending = useRef(false);
+  const foldGeneration = useRef(0);
+  const mounted = useRef(true);
   const suppressClick = useRef(false);
   const current = describeRoom(position);
   const rooms = buildWindow(position);
 
+  // Finish against the captured origin once; keep the DOM/busy ownership until
+  // React has applied the new integer room roles, then clean up before paint.
+  const finishMotion = useCallback((generation: number) => {
+    const motion = foldMotion.current;
+    if (!mounted.current || !motion || motion.generation !== generation) return;
+    if (foldFrame.current !== null) cancelAnimationFrame(foldFrame.current);
+    foldFrame.current = null;
+    foldMotion.current = null;
+    pendingRelease.current = null;
+    completionPending.current = true;
+    const delta = motion.state.plan.targetDelta;
+    if (delta !== 0) {
+      setPosition({ ...motion.origin, depth: motion.origin.depth + delta });
+      setHasMoved(true);
+    }
+    setAction('idle');
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!completionPending.current || action !== 'idle') return;
+    completionPending.current = false;
+    if (stage.current) {
+      paintDrag(stage.current, null);
+      // Flush the settled pose while transform transitions are still disabled.
+      // This is one completion-only layout read, never a per-frame read.
+      void stage.current.offsetWidth;
+      stage.current.removeAttribute('data-fold-drag');
+    }
+    busy.current = false;
+  }, [position, action]);
+
+  const startMotion = useCallback((origin: Readonly<Position>, plan: FoldReleasePlan) => {
+    const generation = ++foldGeneration.current;
+    foldMotion.current = {
+      generation,
+      origin,
+      state: startFold(plan),
+      accumulatorSeconds: 0,
+      lastTimeSeconds: performance.now() / 1000,
+      firstFrame: true,
+    };
+    busy.current = true;
+    setAction('dragging');
+    if (stage.current) {
+      stage.current.setAttribute('data-fold-drag', '');
+      paintDrag(stage.current, plan.startOffsetRooms);
+      stage.current.focus({ preventScroll: true });
+    }
+    const tick = (timestampMilliseconds: number) => {
+      const motion = foldMotion.current;
+      if (!mounted.current || !motion || motion.generation !== generation) return;
+      const timestampSeconds = timestampMilliseconds / 1000;
+      // A same-frame RAF timestamp can precede the event's performance.now().
+      // Clamp only that first baseline mismatch; later time regressions abort.
+      const elapsed = timestampSeconds - motion.lastTimeSeconds;
+      const frameSeconds = motion.firstFrame ? Math.max(0, elapsed) : elapsed;
+      motion.firstFrame = false;
+      motion.lastTimeSeconds = timestampSeconds;
+      if (!Number.isFinite(frameSeconds) || frameSeconds < 0
+          || frameSeconds > LONG_FRAME_GAP_SECONDS || reduced.current || document.hidden) {
+        finishMotion(generation);
+        return;
+      }
+      motion.accumulatorSeconds = Math.min(
+        MAX_ACCUMULATED_SECONDS,
+        motion.accumulatorSeconds + frameSeconds,
+      );
+      let steps = 0;
+      while (motion.accumulatorSeconds + 1e-12 >= FIXED_STEP_SECONDS && steps < 6
+          && motion.state.phase !== 'done') {
+        motion.state = stepFold(motion.state, FIXED_STEP_SECONDS, FOLD_CONFIG);
+        motion.accumulatorSeconds = Math.max(0, motion.accumulatorSeconds - FIXED_STEP_SECONDS);
+        steps += 1;
+      }
+      if (stage.current) paintDrag(stage.current, motion.state.offsetRooms);
+      if (motion.state.phase === 'done') {
+        finishMotion(generation);
+      } else {
+        foldFrame.current = requestAnimationFrame(tick);
+      }
+    };
+    foldFrame.current = requestAnimationFrame(tick);
+  }, [finishMotion]);
+
+  // Capture loss caused by normal pointer-up sees no drag owner and cannot cancel release.
+  const detachDrag = useCallback((pointerId: number) => {
+    const drag = activeDrag.current;
+    if (!drag || drag.pointerId !== pointerId) return;
+    activeDrag.current = null;
+    try {
+      if (drag.captureTarget.hasPointerCapture(pointerId)) drag.captureTarget.releasePointerCapture(pointerId);
+    } catch { /* The browser may already have released or detached the target. */ }
+    return drag;
+  }, []);
+
+  const clearDrag = useCallback((pointerId: number, returnToOrigin = false) => {
+    const drag = detachDrag(pointerId);
+    if (!drag) return;
+    pendingRelease.current = null;
+    if (drag.intent === 'walk') {
+      if (returnToOrigin && !reduced.current
+          && Math.abs(drag.visualOffsetRooms) > FOLD_CONFIG.positionEpsilonRooms) {
+        startMotion(drag.origin, resolveRelease({
+          kind: 'cancel', offsetRooms: drag.visualOffsetRooms,
+        }, FOLD_CONFIG));
+      } else {
+        if (stage.current) {
+          paintDrag(stage.current, null);
+          stage.current.removeAttribute('data-fold-drag');
+        }
+        busy.current = false;
+        setAction('idle');
+      }
+    }
+    return drag;
+  }, [detachDrag, startMotion]);
+
   const inspect = useCallback((open: boolean) => {
     if (busy.current) return;
+    if (activeDrag.current) clearDrag(activeDrag.current.pointerId);
     inspection.current = open;
     setInspecting(open);
-  }, []);
+  }, [clearDrag]);
 
   const navigate = useCallback((next: Action) => {
     if (busy.current || inspection.current) return;
+    if (activeDrag.current) clearDrag(activeDrag.current.pointerId);
     busy.current = true;
     setHasMoved(true);
     setAction(next);
@@ -52,18 +256,45 @@ export default function Museum() {
       timer.current = null;
       if (restoreFocus) stage.current?.focus({ preventScroll: true });
     }, duration);
-  }, []);
+  }, [clearDrag]);
 
   useEffect(() => {
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const sync = () => { reduced.current = preference.matches; };
+    mounted.current = true;
+    const sync = () => {
+      reduced.current = preference.matches;
+      if (preference.matches) {
+        if (activeDrag.current) clearDrag(activeDrag.current.pointerId);
+        if (foldMotion.current) finishMotion(foldMotion.current.generation);
+      }
+    };
+    const visibility = () => {
+      if (!document.hidden) return;
+      if (activeDrag.current) clearDrag(activeDrag.current.pointerId);
+      if (foldMotion.current) finishMotion(foldMotion.current.generation);
+    };
     sync();
     preference.addEventListener('change', sync);
+    document.addEventListener('visibilitychange', visibility);
     return () => {
+      mounted.current = false;
       preference.removeEventListener('change', sync);
+      document.removeEventListener('visibilitychange', visibility);
       if (timer.current) clearTimeout(timer.current);
+      foldGeneration.current += 1;
+      if (foldFrame.current !== null) cancelAnimationFrame(foldFrame.current);
+      foldFrame.current = null;
+      foldMotion.current = null;
+      completionPending.current = false;
+      pendingRelease.current = null;
+      activeDrag.current = null;
+      if (stage.current) {
+        paintDrag(stage.current, null);
+        stage.current.removeAttribute('data-fold-drag');
+      }
+      busy.current = false;
     };
-  }, []);
+  }, [clearDrag, finishMotion]);
 
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
@@ -112,28 +343,124 @@ export default function Museum() {
         <div className="room-heading"><p>THE PAPER MUSEUM</p><span>Room {current.number}<span className="heading-divider">/</span>{FACES[position.facing]}</span></div>
         <div id="walkthrough" ref={stage} tabIndex={-1} className={`stage action-${action}`} aria-label="Museum walkthrough"
           onPointerDown={(event) => {
+            const touchInsideEdges = event.pointerType === 'touch'
+              && event.clientX >= 24 && event.clientX <= window.innerWidth - 24;
+            const primaryMouse = event.pointerType === 'mouse' && event.button === 0;
+            if (!event.isPrimary || (!touchInsideEdges && !primaryMouse) || activeDrag.current
+                || busy.current || inspection.current) return;
+
             suppressClick.current = false;
-            if (event.pointerType !== 'touch' || !event.isPrimary || event.clientX < 24 || event.clientX > window.innerWidth - 24) {
-              pointer.current = null; return;
+            pendingRelease.current = null;
+            const captureTarget = event.target instanceof Element ? event.target : event.currentTarget;
+            activeDrag.current = {
+              pointerId: event.pointerId,
+              captureTarget,
+              startX: event.clientX,
+              startY: event.clientY,
+              roomSpanPixels: Math.max(180, Math.min(420, event.currentTarget.clientHeight * 0.65)),
+              origin: Object.freeze({ ...position }),
+              intent: 'pending',
+              rawOffsetRooms: 0,
+              visualOffsetRooms: 0,
+              samples: [{ timeSeconds: event.timeStamp / 1000, offsetRooms: 0 }],
+            };
+            try {
+              // Capturing the original target preserves its eventual click activation.
+              captureTarget.setPointerCapture(event.pointerId);
+            } catch {
+              activeDrag.current = null;
             }
-            pointer.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+          }}
+          onPointerMove={(event) => {
+            let drag = activeDrag.current;
+            if (!drag || drag.pointerId !== event.pointerId) return;
+            if (inspection.current || (busy.current && drag.intent !== 'walk')
+                || (event.pointerType === 'mouse' && (event.buttons & 1) === 0)) {
+              clearDrag(event.pointerId, true);
+              return;
+            }
+            const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
+            const timeSeconds = event.timeStamp / 1000;
+            const rawOffsetRooms = -dy / drag.roomSpanPixels;
+            if (!Number.isFinite(rawOffsetRooms) || !Number.isFinite(timeSeconds)) return;
+            const latest = drag.samples.at(-1);
+            if (latest && timeSeconds < latest.timeSeconds) return;
+            const samples = [
+              ...drag.samples.filter((sample) => sample.timeSeconds >= timeSeconds - FOLD_CONFIG.sampleWindowSeconds
+                && sample.timeSeconds < timeSeconds),
+              { timeSeconds, offsetRooms: rawOffsetRooms },
+            ].slice(-FOLD_CONFIG.maxSamples);
+            let intent = drag.intent;
+            if (intent === 'pending' && Math.max(Math.abs(dx), Math.abs(dy)) >= 8) {
+              if (Math.abs(dy) >= Math.abs(dx) * 1.2) intent = 'walk';
+              else if (Math.abs(dx) >= Math.abs(dy) * 1.2) intent = 'turn';
+            }
+            if (intent === 'walk' && drag.intent !== 'walk') {
+              // Move capture off the artwork BEFORE its controls become inert.
+              try { event.currentTarget.setPointerCapture(event.pointerId); }
+              catch { clearDrag(event.pointerId); return; }
+              drag = { ...drag, captureTarget: event.currentTarget };
+              busy.current = true;
+              suppressClick.current = true;
+              setAction('dragging');
+              stage.current?.focus({ preventScroll: true });
+              if (!reduced.current) event.currentTarget.setAttribute('data-fold-drag', '');
+            }
+            const visualOffsetRooms = intent === 'walk' ? resistDrag(rawOffsetRooms, FOLD_CONFIG) : 0;
+            activeDrag.current = { ...drag, intent, samples, rawOffsetRooms, visualOffsetRooms };
+            if (intent === 'walk' && !reduced.current) paintDrag(event.currentTarget, visualOffsetRooms);
           }}
           onPointerUp={(event) => {
-            const start = pointer.current; pointer.current = null;
-            if (!start || start.id !== event.pointerId) return;
-            const dx = event.clientX - start.x, dy = event.clientY - start.y;
-            if (Math.max(Math.abs(dx), Math.abs(dy)) < 45) return;
+            const start = activeDrag.current;
+            if (!start || start.pointerId !== event.pointerId) return;
+            const dx = event.clientX - start.startX, dy = event.clientY - start.startY;
+            const walking = start.intent === 'walk' || (start.intent === 'pending'
+              && Math.abs(dy) >= 8 && Math.abs(dy) >= Math.abs(dx) * 1.2);
+            const turning = start.intent === 'turn' || (start.intent === 'pending' && Math.abs(dx) >= Math.abs(dy) * 1.2);
+            if (walking && !reduced.current) {
+              const rawOffsetRooms = -dy / start.roomSpanPixels;
+              const timeSeconds = event.timeStamp / 1000;
+              if (!Number.isFinite(rawOffsetRooms) || !Number.isFinite(timeSeconds)) {
+                clearDrag(event.pointerId, true);
+                return;
+              }
+              pendingRelease.current = {
+                origin: start.origin,
+                visualOffsetRooms: resistDrag(rawOffsetRooms, FOLD_CONFIG),
+                capture: captureReleaseVelocity(start.samples, { timeSeconds, offsetRooms: rawOffsetRooms }, FOLD_CONFIG),
+              };
+              const release = pendingRelease.current;
+              const plan = resolveRelease({
+                kind: 'pointer',
+                offsetRooms: release.visualOffsetRooms,
+                velocityRoomsPerSecond: release.capture.velocityRoomsPerSecond,
+              }, FOLD_CONFIG);
+              detachDrag(event.pointerId);
+              pendingRelease.current = null;
+              suppressClick.current = true;
+              startMotion(release.origin, plan);
+              return;
+            }
+            clearDrag(event.pointerId);
+            if ((!walking && !turning) || Math.abs(walking ? dy : dx) < 45) return;
             suppressClick.current = true;
-            navigate(Math.abs(dy) > Math.abs(dx) ? dy < 0 ? 'forward' : 'back' : dx < 0 ? 'right' : 'left');
+            navigate(walking ? dy < 0 ? 'forward' : 'back' : dx < 0 ? 'right' : 'left');
           }}
-          onPointerCancel={() => { pointer.current = null; }}
+          onPointerCancel={(event) => {
+            clearDrag(event.pointerId, true);
+          }}
+          onLostPointerCapture={(event) => {
+            // Ignore the old child's capture loss when transferring to the stage.
+            if (activeDrag.current?.captureTarget === event.target) clearDrag(event.pointerId, true);
+          }}
           onClickCapture={(event) => { if (suppressClick.current) { event.preventDefault(); event.stopPropagation(); suppressClick.current = false; } }}>
           <div className="scene">
             {rooms.map((room) => {
               const active = room.offset === 0;
               return (
                 <section key={room.key} className={`museum-room room-${active ? 'current' : room.offset < 0 ? 'previous' : 'next'}`}
-                  data-room={room.number} data-fold={room.fold} aria-hidden={active ? undefined : true} inert={!active}
+                  data-room={room.number} data-fold={room.fold} data-offset={room.offset}
+                  aria-hidden={active ? undefined : true} inert={!active || action === 'dragging'}
                   style={{ '--room-accent': room.accent } as CSSProperties}>
                   <div className="paper-left" aria-hidden="true"><span>FOLD<b>{room.number}</b></span></div>
                   <div className="paper-right" aria-hidden="true"><span>KEEP<br />LOOKING.<small>{FACES[room.facing].toUpperCase()}</small></span></div>
