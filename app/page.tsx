@@ -8,6 +8,7 @@ import {
   captureReleaseVelocity, getFoldWindow, resistDrag, resolveRelease, startFold, stepFold,
   type FoldConfig, type FoldReleaseCapture, type FoldReleasePlan, type FoldSample, type FoldState,
 } from '@/lib/fold-physics';
+import { getFoldCrease, getFoldSpin, getFoldSpinWeight } from '@/lib/fold-pose';
 import { buildWindow, describeRoom, EXHIBITS, FACES, INITIAL, move, type Action, type Position, type Room } from '@/lib/museum';
 
 type DragIntent = 'pending' | 'walk' | 'turn';
@@ -70,7 +71,7 @@ const MAX_ACCUMULATED_SECONDS = 0.05;
 const LONG_FRAME_GAP_SECONDS = 0.25;
 
 /** Direct, bounded writes to the three existing views; no layout reads. */
-function paintDrag(element: HTMLDivElement, offsetRooms: number | null, originDepth?: number) {
+function paintDrag(element: HTMLDivElement, offsetRooms: number | null, originDepth?: number, spinDegrees = 0) {
   for (const room of element.querySelectorAll<HTMLElement>('.museum-room')) {
     const left = room.querySelector<HTMLElement>('.paper-left');
     const right = room.querySelector<HTMLElement>('.paper-right');
@@ -86,10 +87,14 @@ function paintDrag(element: HTMLDivElement, offsetRooms: number | null, originDe
       : Number(room.dataset.depth) - originDepth) - offsetRooms;
     room.style.transform = `translateX(${135 * relative}%) translateZ(${-340 * Math.abs(relative)}px) rotateY(${20 * relative}deg)`;
     room.style.opacity = String(Math.max(0, Math.min(1, (1.5 - Math.abs(relative)) * 2)));
-    // A small crease rotation gives the paper leaves the gesture's handedness.
-    const crease = offsetRooms * (room.dataset.fold === 'left' ? 1 : -1) * 32;
-    if (left) left.style.transform = `rotateY(${-40 + crease}deg)`;
-    if (right) right.style.transform = `rotateY(${40 + crease}deg)`;
+    // Stable room-relative displacement survives rebases and reaches idle at integers.
+    const foldsLeft = room.dataset.fold === 'left';
+    const handedness = foldsLeft ? 1 : -1;
+    const crease = getFoldCrease(-relative) * handedness;
+    // Only the descriptor's moving leaf spins; base crease and room/UI poses stay intact.
+    const spin = spinDegrees * handedness * getFoldSpinWeight(-relative);
+    if (left) left.style.transform = `rotateY(${-40 + crease + (foldsLeft ? spin : 0)}deg)`;
+    if (right) right.style.transform = `rotateY(${40 + crease + (foldsLeft ? 0 : spin)}deg)`;
   }
 }
 
@@ -152,7 +157,7 @@ export default function Museum() {
     const motion = foldMotion.current;
     if (motion && stage.current) {
       // Read the latest simulation ref, not the progress that requested this render.
-      paintDrag(stage.current, motion.state.offsetRooms, motion.origin.depth);
+      paintDrag(stage.current, motion.state.offsetRooms, motion.origin.depth, getFoldSpin(motion.state));
     }
     if (!completionPending.current || action !== 'idle') return;
     completionPending.current = false;
@@ -183,6 +188,7 @@ export default function Museum() {
     setAction('dragging');
     if (stage.current) {
       stage.current.setAttribute('data-fold-drag', '');
+      // The release envelope starts at exact zero; live drag also uses this default.
       paintDrag(stage.current, plan.startOffsetRooms, origin.depth);
       stage.current.focus({ preventScroll: true });
     }
@@ -212,7 +218,7 @@ export default function Museum() {
         motion.accumulatorSeconds = Math.max(0, motion.accumulatorSeconds - FIXED_STEP_SECONDS);
         steps += 1;
       }
-      if (stage.current) paintDrag(stage.current, motion.state.offsetRooms, motion.origin.depth);
+      if (stage.current) paintDrag(stage.current, motion.state.offsetRooms, motion.origin.depth, getFoldSpin(motion.state));
       if (motion.state.phase === 'done') {
         finishMotion(generation);
       } else {
