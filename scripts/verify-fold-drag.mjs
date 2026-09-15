@@ -11,6 +11,8 @@ const errors = [];
 const reversals = [];
 const spinReleases = [];
 const ordinaryNavigation = [];
+const keyboardNavigation = [];
+const reducedNavigation = [];
 const exhibitGeometry = [];
 let server;
 let browser;
@@ -134,6 +136,7 @@ try {
   async function verifyOrdinaryNavigation(input, delta) {
     const name = input + (delta > 0 ? ' forward' : ' backward');
     const before = await snap();
+    const beforeStatus = await page.getByRole('status').textContent();
     // A distinct native wheel burst starts only after the existing 240ms suppression gap.
     if (input === 'wheel') { await page.waitForTimeout(260); await page.mouse.move(x, y); }
     await page.evaluate(() => {
@@ -142,32 +145,127 @@ try {
       window.__foldSampleNavigation = true;
       const audit = () => {
         const stage = document.querySelector('.stage');
-        window.__foldNavigationAudit.push({ busy: !stage.classList.contains('action-idle'),
+        const busy = !stage.classList.contains('action-idle');
+        window.__foldNavigationAudit.push({
+          busy,
+          physicsOwned: stage.classList.contains('action-dragging') && stage.hasAttribute('data-fold-drag'),
+          depth: Number(document.querySelector('.museum').dataset.depth),
+          facing: Number(document.querySelector('.museum').dataset.facing),
+          transformed: [...stage.querySelectorAll('.museum-room')].some((room) => room.style.transform !== ''),
+          gated: [...document.querySelectorAll('.movement button, .room-current button')]
+            .every((button) => button.disabled),
+          focused: document.activeElement === stage,
           leaves: window.__foldReadLeaves(), rooms: stage.querySelectorAll('.museum-room').length,
-          images: document.querySelectorAll('img').length });
+          images: document.querySelectorAll('img').length,
+        });
         if (window.__foldSampleNavigation) requestAnimationFrame(audit);
       };
       requestAnimationFrame(audit);
     });
     if (input === 'wheel') await page.mouse.wheel(0, -120 * delta);
     else await page.getByRole('button', { name: delta > 0 ? 'Next room' : 'Previous room', exact: true }).click();
-    await page.locator('.stage:not(.action-idle)').waitFor();
+    await page.locator('.stage.action-dragging').waitFor();
+    const active = await snap();
+    if (input === 'wheel') {
+      // Extra deltas in this native burst must be consumed, even while physics owns motion.
+      await page.mouse.wheel(0, -120 * delta);
+      await page.mouse.wheel(0, -120 * delta);
+    }
     await page.locator('.stage.action-idle').waitFor({ timeout: 3000 }); await pause();
+    const burstLanding = await snap();
+    if (input === 'wheel') {
+      // Nothing from the extra in-flight burst deltas may queue after landing.
+      await page.waitForTimeout(280);
+      await pause();
+    }
     const frames = await page.evaluate(() => {
       window.__foldSampleNavigation = false;
       return window.__foldNavigationAudit;
     });
     const after = await snap();
+    const afterStatus = await page.getByRole('status').textContent();
+    check(name + ': uses the shared physics controller from the captured origin',
+      active.dragging && active.depth === before.depth && active.facing === before.facing
+      && frames.some((frame) => frame.busy && frame.physicsOwned && frame.transformed));
     check(name + ': ordinary navigation advances exactly one integer room once',
       after.depth === before.depth + delta && Number.isInteger(after.depth) && after.facing === before.facing
       && JSON.stringify(await page.evaluate(() => window.__foldDepthChanges)) === JSON.stringify([after.depth]));
-    check(name + ': ordinary navigation stays unspun throughout its visible transition',
-      frames.some((frame) => frame.busy) && frames.every((frame) => boundedLeaves(frame.leaves)));
-    check(name + ': ordinary navigation keeps three views and restores idle artwork controls',
-      frames.every((frame) => frame.rooms === 3 && frame.images <= 3)
+    check(name + ': ordinary navigation stays finite, unspun and fixed at its origin while busy',
+      frames.some((frame) => frame.busy)
+      && frames.every((frame) => (!frame.busy || frame.depth === before.depth)
+        && frame.facing === before.facing && boundedLeaves(frame.leaves)));
+    check(name + ': ordinary navigation gates controls and keeps the three-view cap',
+      frames.some((frame) => frame.busy && frame.gated && frame.focused)
+      && frames.every((frame) => frame.rooms === 3 && frame.images <= 3)
       && after.rooms === 3 && after.images === 3 && idleLeaves(await page.evaluate(() => window.__foldReadLeaves()))
+      && await page.locator('.stage').evaluate((stage) => document.activeElement === stage)
       && await page.locator('.movement button, .room-current button').evaluateAll((buttons) => buttons.every((button) => !button.disabled)));
+    check(name + ': restores its settled announcement without a queued burst step',
+      beforeStatus !== afterStatus
+      && await page.locator('.room-current').getAttribute('data-depth') === String(after.depth)
+      && burstLanding.depth === after.depth && burstLanding.facing === after.facing);
     ordinaryNavigation.push({ input, delta, frames: frames.length, before: before.depth, after: after.depth });
+  }
+  async function verifyKeyboardStep(key, delta) {
+    const name = 'keyboard ' + key;
+    const before = await snap();
+    const beforeStatus = await page.getByRole('status').textContent();
+    await page.evaluate(() => {
+      window.__foldDepthChanges = [];
+      window.__foldKeyboardAudit = [];
+      window.__foldSampleKeyboard = true;
+      const audit = () => {
+        const stage = document.querySelector('.stage');
+        const busy = !stage.classList.contains('action-idle');
+        window.__foldKeyboardAudit.push({
+          busy,
+          physicsOwned: stage.classList.contains('action-dragging') && stage.hasAttribute('data-fold-drag'),
+          depth: Number(document.querySelector('.museum').dataset.depth),
+          facing: Number(document.querySelector('.museum').dataset.facing),
+          transformed: [...stage.querySelectorAll('.museum-room')].some((room) => room.style.transform !== ''),
+          gated: [...document.querySelectorAll('.movement button, .room-current button')]
+            .every((button) => button.disabled),
+          focused: document.activeElement === stage,
+          rooms: stage.querySelectorAll('.museum-room').length,
+          images: document.querySelectorAll('img').length,
+          leaves: window.__foldReadLeaves(),
+        });
+        if (window.__foldSampleKeyboard) requestAnimationFrame(audit);
+      };
+      requestAnimationFrame(audit);
+    });
+    await page.keyboard.press(key);
+    await page.locator('.stage.action-dragging').waitFor();
+    const active = await snap();
+    await page.locator('.stage.action-idle').waitFor({ timeout: 3000 }); await pause();
+    const frames = await page.evaluate(() => {
+      window.__foldSampleKeyboard = false;
+      return window.__foldKeyboardAudit;
+    });
+    const after = await snap();
+    const afterStatus = await page.getByRole('status').textContent();
+    check(name + ': uses the shared physics controller from the captured origin',
+      active.dragging && active.depth === before.depth && active.facing === before.facing
+      && frames.some((frame) => frame.busy && frame.physicsOwned && frame.transformed));
+    check(name + ': commits exactly one signed integer room',
+      after.depth === before.depth + delta && Number.isInteger(after.depth)
+      && after.facing === before.facing
+      && JSON.stringify(await page.evaluate(() => window.__foldDepthChanges)) === JSON.stringify([after.depth]));
+    check(name + ': remains moderate, finite, unspun and bounded to three views',
+      frames.every((frame) => (!frame.busy || frame.depth === before.depth)
+        && frame.facing === before.facing && frame.rooms === 3 && frame.images <= 3
+        && boundedLeaves(frame.leaves)));
+    check(name + ': gates controls during motion and restores idle focus and controls',
+      frames.some((frame) => frame.busy && frame.gated && frame.focused)
+      && after.rooms === 3 && after.images === 3
+      && await page.locator('.stage').evaluate((stage) => document.activeElement === stage)
+      && await page.locator('.movement button, .room-current button')
+        .evaluateAll((buttons) => buttons.every((button) => !button.disabled)));
+    check(name + ': announces only its settled deterministic destination',
+      beforeStatus !== afterStatus
+      && await page.locator('.room-current').getAttribute('data-depth') === String(after.depth)
+      && idleLeaves(await page.evaluate(() => window.__foldReadLeaves())));
+    keyboardNavigation.push({ key, delta, frames: frames.length, before: before.depth, after: after.depth });
   }
   async function compete(phase) {
     const unchanged = await page.locator('.stage').evaluate((element, phase) => {
@@ -265,6 +363,54 @@ try {
   await page.keyboard.press('Escape');
   await page.getByRole('dialog').waitFor({ state: 'detached' });
   checks.push('ordinary artwork click opens inspection');
+  const focusState = (selector) => page.locator(selector).evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      active: document.activeElement === element,
+      visible: element.matches(':focus-visible'),
+      outlineStyle: style.outlineStyle,
+      outlineWidth: Number.parseFloat(style.outlineWidth),
+    };
+  });
+  await page.locator('.stage').focus();
+  await page.keyboard.press('Tab');
+  check('Tab enters the current room at its named artwork control',
+    await page.locator('.room-current .artwork-frame').evaluate((element) =>
+      document.activeElement === element && element.getAttribute('aria-label')?.startsWith('Inspect ')));
+  const artworkFocus = await focusState('.room-current .artwork-frame');
+  await page.waitForFunction(() => Number(getComputedStyle(
+    document.querySelector('.room-current .inspect-cue')).opacity) > 0.99);
+  check('keyboard focus is visibly styled on the current artwork', artworkFocus.active
+    && artworkFocus.visible && artworkFocus.outlineStyle === 'solid' && artworkFocus.outlineWidth >= 3
+    && await page.locator('.room-current .inspect-cue').evaluate((element) => Number(getComputedStyle(element).opacity) > 0.99));
+  const movementNames = ['Turn left', 'Previous room', 'Inspect object', 'Next room', 'Turn right'];
+  check('idle current and neighboring rooms expose only the intended artwork control',
+    await page.locator('.museum-room').evaluateAll((rooms) => rooms.length === 3
+      && rooms.every((room, index) => room.inert === (index !== 1)
+        && room.getAttribute('aria-hidden') === (index === 1 ? null : 'true')
+        && room.querySelector('.artwork-frame').disabled === (index !== 1))));
+  for (const name of movementNames) {
+    await page.keyboard.press('Tab');
+    const focused = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+    const state = await focusState(`.movement [aria-label="${name}"]`);
+    check(`Tab reaches the uniquely named ${name} control with visible focus`, focused === name
+      && await page.getByRole('button', { name, exact: true }).count() === 1
+      && state.active && state.visible && state.outlineStyle === 'solid' && state.outlineWidth >= 3);
+  }
+  await page.keyboard.press('Shift+Tab');
+  check('Shift+Tab reverses through the movement controls',
+    await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Next room'));
+  await page.locator('.stage').focus(); await page.keyboard.press('Tab'); await page.keyboard.press('Enter');
+  await page.getByRole('dialog').waitFor();
+  await page.waitForFunction(() => document.activeElement?.classList.contains('inspection-close'));
+  const closeFocus = await focusState('.inspection-close');
+  check('Enter opens inspection on its named visibly focused close control',
+    await page.getByRole('button', { name: 'Back to room', exact: true }).count() === 1
+    && closeFocus.active && closeFocus.visible && closeFocus.outlineStyle === 'solid' && closeFocus.outlineWidth >= 3);
+  await page.keyboard.press('Space');
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  check('Space closes inspection and restores the artwork focus owner',
+    await page.locator('.room-current .artwork-frame').evaluate((element) => document.activeElement === element));
   const initial = await snap();
   await begin();
   await page.mouse.move(x, y - 5); await pause();
@@ -294,6 +440,25 @@ try {
     && await page.locator('.movement button').evaluateAll((buttons) => buttons.every((button) => !button.disabled)));
   check('negative drag cancellation restores every idle leaf',
     idleLeaves(await page.evaluate(() => window.__foldReadLeaves())));
+  // Isolate cancellation from compete(), whose synthetic button clicks would otherwise
+  // consume the pending compatibility-click suppression before this keyboard check.
+  await begin(); await page.mouse.move(x, y + 70); await pause();
+  await page.locator('.stage').evaluate((element) => {
+    element.dispatchEvent(new PointerEvent('pointercancel', {
+      pointerId: window.__foldPointerId, pointerType: 'mouse', bubbles: true,
+    }));
+  });
+  await page.locator('.stage.action-idle').waitFor({ timeout: 3000 });
+  // A cancelled pointer drag leaves one compatibility click to suppress. Its stale
+  // state must never consume the first keyboard activation (keyboard click detail is 0).
+  await page.locator('.stage').focus(); await page.keyboard.press('Tab'); await page.keyboard.press('Enter');
+  await page.getByRole('dialog').waitFor({ timeout: 1000 });
+  check('first keyboard artwork activation survives cancelled-drag click suppression', true);
+  await page.mouse.up();
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  check('cancelled-drag keyboard inspection restores artwork focus on close',
+    await page.locator('.room-current .artwork-frame').evaluate((element) => document.activeElement === element));
   await begin(); await page.mouse.move(x, y - 70); await pause(); await cancel('lostpointercapture');
   check('capture loss starts the same bounded return', (await snap()).dragging && (await snap()).depth === initial.depth);
   await page.locator('.stage.action-idle').waitFor({ timeout: 3000 });
@@ -803,7 +968,9 @@ try {
     };
     requestAnimationFrame(audit);
   });
-  await page.keyboard.press('ArrowUp'); await page.waitForTimeout(650);
+  await page.keyboard.press('ArrowUp');
+  await page.locator('.stage.action-dragging').waitFor();
+  await page.locator('.stage.action-idle').waitFor({ timeout: 3000 }); await pause();
   const stepLeaves = await page.evaluate(() => {
     window.__foldSampleStep = false;
     return window.__foldStepLeaves;
@@ -813,6 +980,12 @@ try {
   await page.mouse.move(x, y - 80); await pause();
   check('alternate navigation clears pending origin before later pointer movement', !(await snap()).dragging && (await snap()).depth === beforeInterruptedPending.depth + 1);
   await page.mouse.up(); await pause();
+  const keyboardOrigin = await snap();
+  for (const [key, delta] of [['ArrowUp', 1], ['w', 1], ['ArrowDown', -1], ['s', -1]]) {
+    await verifyKeyboardStep(key, delta);
+  }
+  check('signed arrow/WASD keyboard steps restore the exact starting depth and facing',
+    (await snap()).depth === keyboardOrigin.depth && (await snap()).facing === keyboardOrigin.facing);
   for (const input of ['wheel', 'button']) {
     for (const delta of [1, -1]) await verifyOrdinaryNavigation(input, delta);
   }
@@ -842,6 +1015,159 @@ try {
   check('reduced-motion release still navigates once', (await snap()).depth === reducedBefore.depth + 1);
   check('reduced-motion drag cancellation and release leave every paper leaf idle',
     idleLeaves(await page.evaluate(() => window.__foldReadLeaves())));
+  // Exercise the short fade across every entry, including wheel tails after landing.
+  async function verifyReducedInput(input, delta, turn = false) {
+    const name = `reduced ${input} ${turn ? 'turn ' : ''}${delta}`;
+    const before = await snap();
+    if (input === 'keyboard') await page.locator('.room-current button').focus();
+    else await page.locator('.stage').focus();
+    if (input === 'wheel') await page.waitForTimeout(260);
+    await page.evaluate(() => {
+      const stage = document.querySelector('.stage');
+      const museum = document.querySelector('.museum');
+      const status = document.querySelector('[role="status"]');
+      const nativeFrame = window.requestAnimationFrame;
+      const result = { frames: [], commits: [], status: [], foldFrames: 0, wheelTimes: [] };
+      window.__foldReducedAudit = result;
+      window.requestAnimationFrame = (callback) => {
+        if (stage.hasAttribute('data-fold-drag')) result.foldFrames += 1;
+        return nativeFrame.call(window, callback);
+      };
+      const observer = new MutationObserver((records) => {
+        if (records.some((record) => record.target === museum)) {
+          result.commits.push([Number(museum.dataset.depth), Number(museum.dataset.facing)]);
+        }
+        if (records.some((record) => record.target === status || status.contains(record.target))) {
+          result.status.push(status.textContent);
+        }
+      });
+      observer.observe(museum, { attributes: true, attributeFilter: ['data-depth', 'data-facing'] });
+      observer.observe(status, { childList: true, characterData: true, subtree: true });
+      let sampling = true;
+      const audit = () => {
+        const rooms = [...stage.querySelectorAll('.museum-room')];
+        const current = stage.querySelector('.room-current');
+        result.frames.push({
+          busy: !stage.classList.contains('action-idle'),
+          depth: Number(museum.dataset.depth), facing: Number(museum.dataset.facing),
+          status: status.textContent,
+          clean: !stage.hasAttribute('data-fold-drag') && rooms.every((room) =>
+            room.style.transform === '' && room.style.opacity === ''
+            && [...room.querySelectorAll('.paper-left,.paper-right')].every((leaf) => leaf.style.transform === '')),
+          stationary: new DOMMatrixReadOnly(getComputedStyle(current).transform).isIdentity,
+          quiet: getComputedStyle(stage.querySelector('.scene')).animationName === 'quiet-step',
+          gated: [...document.querySelectorAll('.movement button,.room-current button')].every((button) => button.disabled),
+          focused: document.activeElement === stage,
+          rooms: rooms.length, images: document.querySelectorAll('img').length,
+          leaves: window.__foldReadLeaves(),
+        });
+        if (sampling) nativeFrame.call(window, audit);
+      };
+      audit();
+      window.__foldEndReducedAudit = () => {
+        sampling = false;
+        observer.disconnect();
+        window.requestAnimationFrame = nativeFrame;
+        return result;
+      };
+    });
+    const beforeStatus = await page.getByRole('status').textContent();
+    if (input === 'keyboard') await page.keyboard.press(turn ? delta > 0 ? 'ArrowRight' : 'ArrowLeft' : delta > 0 ? 'ArrowUp' : 'ArrowDown');
+    else if (input === 'button') await page.getByRole('button', { name: turn ? delta > 0 ? 'Turn right' : 'Turn left' : delta > 0 ? 'Next room' : 'Previous room', exact: true }).click();
+    else if (input === 'wheel') {
+      await page.locator('.stage').evaluate(async (stage, delta) => {
+        // A bounded native-clock burst spans several 160ms fades without a 240ms gap.
+        for (let event = 0; event < 10; event++) {
+          if (event) await new Promise((resolve) => setTimeout(resolve, 40));
+          window.__foldReducedAudit.wheelTimes.push(performance.now());
+          stage.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -120 * delta }));
+        }
+      }, delta);
+    } else {
+      await begin();
+      await page.mouse.move(turn ? x - 80 * delta : x, turn ? y : y - 80 * (delta || 1));
+      await pause();
+      if (input === 'cancel' || input === 'capture-loss') await cancel(input === 'cancel' ? 'pointercancel' : 'lostpointercapture');
+      else await page.mouse.up();
+    }
+    await page.locator('.stage.action-idle').waitFor({ timeout: 2000 });
+    await page.waitForTimeout(280); await pause();
+    const audit = await page.evaluate(() => window.__foldEndReducedAudit());
+    const after = await snap();
+    const afterStatus = await page.getByRole('status').textContent();
+    const cancelled = input === 'cancel' || input === 'capture-loss';
+    const expected = [before.depth + (turn || cancelled ? 0 : delta), turn ? (before.facing + delta + 4) % 4 : before.facing];
+    check(name + ': commits exactly the signed destination once, with no queued step',
+      after.depth === expected[0] && after.facing === expected[1]
+      && JSON.stringify(audit.commits) === JSON.stringify(cancelled ? [] : [expected]));
+    check(name + ': bypasses fold RAF, perspective travel and spin throughout',
+      audit.foldFrames === 0 && audit.frames.every((frame) => frame.clean && frame.stationary && idleLeaves(frame.leaves))
+      && (cancelled || audit.frames.some((frame) => frame.busy && frame.quiet)));
+    check(name + ': holds origin and announcement while busy within three views',
+      audit.frames.every((frame) => frame.rooms === 3 && frame.images <= 3 && (!frame.busy
+        || frame.depth === before.depth && frame.facing === before.facing && frame.status === beforeStatus))
+      && JSON.stringify(audit.status) === JSON.stringify(cancelled ? [] : [afterStatus]));
+    check(name + ': gates competing controls and restores stage focus and controls',
+      audit.frames.some((frame) => frame.busy && frame.gated)
+      && await page.locator('.stage').evaluate((stage) => document.activeElement === stage)
+      && await page.locator('.movement button,.room-current button').evaluateAll((buttons) => buttons.every((button) => !button.disabled)));
+    if (input === 'wheel') check(name + ': tested one continuous burst across the landing',
+      audit.wheelTimes.length === 10 && audit.wheelTimes.at(-1) - audit.wheelTimes[0] > 320
+      && audit.wheelTimes.every((time, index) => !index || time - audit.wheelTimes[index - 1] < 240));
+    reducedNavigation.push({ input, delta, turn, frames: audit.frames.length, before: [before.depth, before.facing], after: expected });
+  }
+  const reducedOrigin = await snap();
+  for (const input of ['wheel', 'keyboard', 'button', 'pointer']) {
+    for (const delta of [1, -1]) await verifyReducedInput(input, delta);
+  }
+  for (const input of ['keyboard', 'button', 'pointer']) {
+    for (const delta of [1, -1]) await verifyReducedInput(input, delta, true);
+  }
+  for (const input of ['cancel', 'capture-loss']) {
+    for (const delta of [1, -1]) await verifyReducedInput(input, delta);
+  }
+  check('reduced signed input matrix restores exact depth and facing',
+    (await snap()).depth === reducedOrigin.depth && (await snap()).facing === reducedOrigin.facing);
+  const reducedClean = () => page.locator('.stage').evaluate((stage) =>
+    stage.classList.contains('action-idle') && !stage.hasAttribute('data-fold-drag')
+    && document.activeElement === stage
+    && [...stage.querySelectorAll('.museum-room,.paper-left,.paper-right')].every((node) => node.style.transform === '')
+    && [...document.querySelectorAll('.movement button,.room-current button')].every((button) => !button.disabled));
+  for (const delta of [1, -1]) {
+    await page.emulateMedia({ reducedMotion: 'no-preference' }); await pause();
+    const before = await snap();
+    await begin(); await page.mouse.move(x, y - 80 * delta); await pause();
+    check(`preference during live drag ${delta}: starts with an unreleased fold`,
+      (await snap()).dragging && (await snap()).transform !== '');
+    await page.emulateMedia({ reducedMotion: 'reduce' }); await pause();
+    await page.mouse.up(); await page.waitForTimeout(200); await pause();
+    check(`preference during live drag ${delta}: aborts at origin without a release or stranded gate`,
+      (await snap()).depth === before.depth && (await snap()).facing === before.facing
+      && await reducedClean() && idleLeaves(await page.evaluate(() => window.__foldReadLeaves())));
+  }
+  for (const input of ['keyboard', 'wheel', 'button', 'turn']) {
+    for (const delta of [1, -1]) {
+      await page.emulateMedia({ reducedMotion: 'no-preference' }); await pause();
+      if (input === 'wheel') { await page.waitForTimeout(260); await page.mouse.move(x, y); }
+      await page.locator('.stage').focus();
+      const before = await snap();
+      await page.evaluate(() => { window.__foldDepthChanges = []; });
+      if (input === 'wheel') await page.mouse.wheel(0, -120 * delta);
+      else if (input === 'button') await page.getByRole('button', { name: delta > 0 ? 'Next room' : 'Previous room', exact: true }).click();
+      else await page.keyboard.press(input === 'turn' ? delta > 0 ? 'ArrowRight' : 'ArrowLeft' : delta > 0 ? 'ArrowUp' : 'ArrowDown');
+      await page.locator('.stage:not(.action-idle)').waitFor();
+      check(`preference during ${input} ${delta}: interrupts at the captured origin`,
+        (await snap()).depth === before.depth && (await snap()).facing === before.facing);
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.locator('.stage.action-idle').waitFor({ timeout: 1500 }); await pause();
+      const after = await snap();
+      check(`preference during ${input} ${delta}: resolves once with clean idle controls`,
+        after.depth === before.depth + (input === 'turn' ? 0 : delta)
+        && after.facing === (input === 'turn' ? (before.facing + delta + 4) % 4 : before.facing)
+        && JSON.stringify(await page.evaluate(() => window.__foldDepthChanges)) === JSON.stringify(input === 'turn' ? [] : [after.depth])
+        && await reducedClean() && idleLeaves(await page.evaluate(() => window.__foldReadLeaves())));
+    }
+  }
   check('never mounted a fourth image', await page.evaluate(() => window.__foldPeakImages <= 3));
   check('never mounted a fourth room', await page.evaluate(() => window.__foldPeakRooms <= 3));
   const mountPeak = await page.evaluate(() => window.__foldMountPeak);
@@ -852,7 +1178,8 @@ try {
   check('exactly three rooms after every observed commit', await page.evaluate(() =>
     window.__foldCommittedRoomCounts.size === 1 && window.__foldCommittedRoomCounts.has(3)));
   check('no browser runtime errors', errors.length === 0);
-  console.log(JSON.stringify({ passed: checks.length, checks, mountPeak, reversals, spinReleases, ordinaryNavigation, exhibitGeometry, errors }, null, 2));
+  console.log(JSON.stringify({ passed: checks.length, checks, mountPeak, reversals, spinReleases,
+    keyboardNavigation, ordinaryNavigation, reducedNavigation, exhibitGeometry, errors }, null, 2));
 } catch (error) {
   console.error(JSON.stringify({ completed: checks, failure: error.message, errors, serverLog }, null, 2));
   process.exitCode = 1;

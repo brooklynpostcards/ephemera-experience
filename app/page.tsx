@@ -119,6 +119,8 @@ export default function Museum() {
   const busy = useRef(false);
   const inspection = useRef(false);
   const reduced = useRef(false);
+  // A room commit replaces the wheel listener, but must not restart an inertial burst.
+  const wheelBurst = useRef({ lastEvent: -Infinity, total: 0, consumed: false });
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeDrag = useRef<ActiveDrag | null>(null);
   // Consumed once by the one-room release controller.
@@ -276,6 +278,7 @@ export default function Museum() {
   const navigate = useCallback((next: Action) => {
     if (busy.current || inspection.current) return;
     if (activeDrag.current) clearDrag(activeDrag.current.pointerId);
+    if (reduced.current) stage.current?.focus({ preventScroll: true });
     busy.current = true;
     setHasMoved(true);
     setAction(next);
@@ -289,6 +292,18 @@ export default function Museum() {
       if (restoreFocus) stage.current?.focus({ preventScroll: true });
     }, duration);
   }, [clearDrag]);
+
+  const navigateStep = useCallback((direction: -1 | 1) => {
+    // Preserve the existing reduced-motion fade; ordinary step inputs use the shared spring.
+    if (reduced.current) {
+      navigate(direction > 0 ? 'forward' : 'back');
+      return;
+    }
+    if (busy.current || inspection.current) return;
+    if (activeDrag.current) clearDrag(activeDrag.current.pointerId);
+    const origin = Object.freeze({ ...position });
+    startMotion(origin, resolveRelease({ kind: 'step', direction }, FOLD_CONFIG));
+  }, [clearDrag, navigate, position, startMotion]);
 
   useEffect(() => {
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -338,31 +353,35 @@ export default function Museum() {
         ArrowLeft: 'left', a: 'left', ArrowRight: 'right', d: 'right',
       };
       const next = keys[event.key] ?? keys[event.key.toLowerCase()];
-      if (next) { event.preventDefault(); navigate(next); }
+      if (next) {
+        event.preventDefault();
+        if (next === 'forward' || next === 'back') navigateStep(next === 'forward' ? 1 : -1);
+        else navigate(next);
+      }
       else if ((event.key === 'Enter' || event.key === ' ') && !element.closest('button, a')) {
         event.preventDefault(); inspect(true);
       }
     }
     document.addEventListener('keydown', keydown);
     return () => document.removeEventListener('keydown', keydown);
-  }, [navigate, inspect]);
+  }, [navigate, navigateStep, inspect]);
 
   useEffect(() => {
     const element = stage.current;
-    let lastEvent = -Infinity, total = 0, consumed = false;
     function wheel(event: WheelEvent) {
       if (event.ctrlKey || event.metaKey || inspection.current || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
       event.preventDefault();
       const now = performance.now();
-      if (now - lastEvent > 240) { consumed = false; total = 0; }
-      lastEvent = now;
-      if (busy.current || consumed) { consumed = true; return; }
-      total += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 500 : 1);
-      if (Math.abs(total) >= 35) { consumed = true; navigate(total < 0 ? 'forward' : 'back'); }
+      const burst = wheelBurst.current;
+      if (now - burst.lastEvent > 240) { burst.consumed = false; burst.total = 0; }
+      burst.lastEvent = now;
+      if (busy.current || burst.consumed) { burst.consumed = true; return; }
+      burst.total += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 500 : 1);
+      if (Math.abs(burst.total) >= 35) { burst.consumed = true; navigateStep(burst.total < 0 ? 1 : -1); }
     }
     element?.addEventListener('wheel', wheel, { passive: false });
     return () => element?.removeEventListener('wheel', wheel);
-  }, [navigate]);
+  }, [navigateStep]);
 
   return (
     <Dialog open={inspecting} onOpenChange={inspect}>
@@ -485,7 +504,12 @@ export default function Museum() {
             // Ignore the old child's capture loss when transferring to the stage.
             if (activeDrag.current?.captureTarget === event.target) clearDrag(event.pointerId, true);
           }}
-          onClickCapture={(event) => { if (suppressClick.current) { event.preventDefault(); event.stopPropagation(); suppressClick.current = false; } }}>
+          onClickCapture={(event) => {
+            if (!suppressClick.current) return;
+            suppressClick.current = false;
+            // Pointer compatibility clicks have positive detail; keyboard activation is 0.
+            if (event.detail > 0) { event.preventDefault(); event.stopPropagation(); }
+          }}>
           <div className="scene">
             {rooms.map((room) => {
               const active = room.offset === 0;
@@ -516,9 +540,9 @@ export default function Museum() {
           <p className="navigation-note">A small thing.<br /><em>A whole other room.</em></p>
           <nav className="movement" aria-label="Walk and turn">
             <Button className="move-button" aria-label="Turn left" onClick={() => navigate('left')} disabled={action !== 'idle'}><ArrowLeft aria-hidden="true" /><span>Turn</span></Button>
-            <Button className="move-button" aria-label="Previous room" onClick={() => navigate('back')} disabled={action !== 'idle'}><ArrowDown aria-hidden="true" /><span>Back</span></Button>
+            <Button className="move-button" aria-label="Previous room" onClick={() => navigateStep(-1)} disabled={action !== 'idle'}><ArrowDown aria-hidden="true" /><span>Back</span></Button>
             <Button className="move-button" aria-label="Inspect object" onClick={() => inspect(true)} disabled={action !== 'idle'}><Maximize2 aria-hidden="true" /><span>Inspect</span></Button>
-            <Button className="move-button go-forward" aria-label="Next room" onClick={() => navigate('forward')} disabled={action !== 'idle'}><ArrowUp aria-hidden="true" /><span>Walk</span></Button>
+            <Button className="move-button go-forward" aria-label="Next room" onClick={() => navigateStep(1)} disabled={action !== 'idle'}><ArrowUp aria-hidden="true" /><span>Walk</span></Button>
             <Button className="move-button" aria-label="Turn right" onClick={() => navigate('right')} disabled={action !== 'idle'}><ArrowRight aria-hidden="true" /><span>Turn</span></Button>
           </nav>
           <p className="navigation-instructions">Arrows / WASD to move<br />Enter to look closer</p>
