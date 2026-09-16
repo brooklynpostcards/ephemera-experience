@@ -35,7 +35,7 @@ button:disabled { cursor:default; }
 .paper-floor { position:absolute; top:100%; width:100%; height:44%; background:linear-gradient(#c2c5b3,#e2e3d5); border:1px solid #b8bfaa; transform:rotateX(58deg); transform-origin:top; }
 .paper-floor span { display:block; margin:25px; font:12px 'Courier New',monospace; letter-spacing:.2em; color:#626b56; }
 .wall-meta { position:relative; display:flex; justify-content:space-between; padding:18px 24px 0; font:12px 'Courier New',monospace; letter-spacing:.1em; color:#686e5e; }
-.exhibit-mount { position:relative; min-height:0; padding:18px 16% 16px; display:grid; grid-template-rows:minmax(0,1fr) auto; justify-items:center; gap:18px; }
+.exhibit-mount { position:relative; min-height:0; padding:18px 16% 16px; display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr) auto; justify-items:center; gap:18px; }
 .artwork-frame { position:relative; display:flex; width:100%; height:100%; min-height:0; max-width:430px; padding:0; border:9px solid #fff; background:#fff; box-shadow:1px 3px 0 #a1a18e,3px 8px 20px #2f3f1726; transform:rotate(-1.1deg); transition:transform 230ms ease,box-shadow 230ms ease; }
 .artwork-frame img { width:100%; height:100%; min-height:0; object-fit:contain; background:#fff; }
 button.artwork-frame:not(:disabled):hover { transform:rotate(0) translateY(-3px); box-shadow:1px 3px 0 #a1a18e,3px 10px 26px #2f3f1738; }
@@ -85,7 +85,7 @@ button.artwork-frame:not(:disabled):hover .inspect-cue,button.artwork-frame:focu
 /* Layers: rooms 0-3, interface 2, dialog 50, skip link 60. */
 .inspection[data-slot=dialog-content] { width:min(90vw,960px); max-width:none; height:90dvh; max-height:1100px; border-radius:0; padding:20px; gap:15px; grid-template-rows:auto minmax(0,1fr) auto; background:var(--wall); color:#252821; box-shadow:0 22px 100px #10190955; animation:none; }
 .inspection-bar { display:flex; justify-content:space-between; align-items:center; gap:16px; font:12px 'Courier New',monospace; }
-.inspection-close[data-slot=button] { background:transparent; color:inherit; border:1px solid #a5aa98; border-radius:0; height:44px; padding:10px; font-size:14px; }.inspection-close[data-slot=button]:hover { background:#d9decd; }
+.inspection-close { background:transparent; color:inherit; border:1px solid #a5aa98; border-radius:0; height:44px; padding:10px; font-size:14px; }.inspection-close:hover { background:#d9decd; }
 .inspection-image { min-height:0; display:flex; justify-content:center; background:#fff; }.inspection-image img { width:100%; height:100%; object-fit:contain; }
 .inspection-caption { text-align:center; }.inspection-caption [data-slot=dialog-title] { font:italic 26px/1.2 Georgia,serif; }.inspection-caption [data-slot=dialog-description] { font:12px 'Courier New',monospace; margin-top:8px; color:#5b6350; }
 [data-slot=dialog-overlay] { background:#171d16a6; backdrop-filter:none; }
@@ -102,9 +102,9 @@ button.artwork-frame:not(:disabled):hover .inspect-cue,button.artwork-frame:focu
   .paper-left,.paper-right { width:20%; }.paper-left b { font-size:26px; }.paper-right>span { font-size:14px; margin-top:80%; }.paper-left>span { margin-top:80%; font-size:12px; }.paper-right small { font-size:12px; }
   .paper-floor span { font-size:12px; margin:12px; }.wall-meta { padding:12px 13px 0; font-size:12px; letter-spacing:0; }
   .exhibit-mount { padding:15px 8% 13px; gap:12px; }.artwork-frame { border-width:6px; }.mount-tape { top:7px; height:17px; width:46px; left:calc(50% - 23px); }
-  .accession-slip h2 { font-size:19px; }.navigation-area { padding:8px 14px 20px; }.movement { gap:8px; }.move-button[data-slot=button] { width:56px; height:60px; }
+  .accession-slip h2 { font-size:19px; }.navigation-area { padding:8px 14px 20px; }.movement { gap:8px; }.move-button[data-slot=button] { width:auto; min-width:56px; height:60px; padding:8px 4px; }
   .museum-footer { padding:14px 18px max(14px,env(safe-area-inset-bottom)); justify-content:center; font-size:12px; }.museum-footer>span:first-child,.museum-footer>span:last-child { display:none; }.hint { display:block; }
-  .inspection[data-slot=dialog-content] { width:calc(100vw - 24px); height:92dvh; padding:14px; }.inspection-bar { font-size:12px; gap:8px; }.inspection-close[data-slot=button] { font-size:14px; }.inspection-caption [data-slot=dialog-title] { font-size:22px; }
+  .inspection[data-slot=dialog-content] { width:calc(100vw - 24px); height:92dvh; padding:14px; }.inspection-bar { font-size:12px; gap:8px; }.inspection-caption [data-slot=dialog-title] { font-size:22px; }
 }
 @media(max-height:550px) and (min-width:600px) {
   .museum { min-height:100dvh; grid-template-rows:auto auto minmax(260px,1fr) auto; }.masthead { padding-block:12px; }.wordmark h1 { font-size:28px; }

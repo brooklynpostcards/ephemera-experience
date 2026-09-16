@@ -347,7 +347,7 @@ export default function Museum() {
     function keydown(event: KeyboardEvent) {
       if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
       const element = event.target as HTMLElement;
-      if (element.closest('input, textarea, select, [contenteditable="true"]') || inspection.current) return;
+      if (element.isContentEditable || element.closest('input, textarea, select') || inspection.current) return;
       const keys: Record<string, Action> = {
         ArrowUp: 'forward', w: 'forward', ArrowDown: 'back', s: 'back',
         ArrowLeft: 'left', a: 'left', ArrowRight: 'right', d: 'right',
@@ -455,11 +455,14 @@ export default function Museum() {
               suppressClick.current = true;
               setAction('dragging');
               stage.current?.focus({ preventScroll: true });
-              if (!reduced.current) event.currentTarget.setAttribute('data-fold-drag', '');
             }
             const visualOffsetRooms = intent === 'walk' ? resistDrag(rawOffsetRooms, FOLD_CONFIG) : 0;
             activeDrag.current = { ...drag, intent, samples, rawOffsetRooms, visualOffsetRooms };
-            if (intent === 'walk' && !reduced.current) paintDrag(event.currentTarget, visualOffsetRooms);
+            if (intent === 'walk' && !reduced.current) {
+              // Reduced motion can be disabled after this gesture already locked to walking.
+              event.currentTarget.setAttribute('data-fold-drag', '');
+              paintDrag(event.currentTarget, visualOffsetRooms);
+            }
           }}
           onPointerUp={(event) => {
             const start = activeDrag.current;

@@ -548,6 +548,8 @@ try {
       window.__foldStatusObserver = statusObserver;
       window.__foldLandingCleanup = [];
       window.__foldLeafCleanup = [];
+      // Invoked below through Reflect.apply with the owning declaration as its receiver.
+      // oxlint-disable-next-line typescript/unbound-method
       const nativeRemoveProperty = CSSStyleDeclaration.prototype.removeProperty;
       window.__foldRestoreRemoveProperty = () => {
         CSSStyleDeclaration.prototype.removeProperty = nativeRemoveProperty;
