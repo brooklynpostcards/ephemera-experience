@@ -245,6 +245,9 @@ const cases = [
   ['step backward', { kind: 'step', direction: -1 }, -1],
 ];
 for (const [name, input, target] of cases) {
+  if (typeof name !== 'string' || typeof target !== 'number') {
+    throw new TypeError('invalid release test case');
+  }
   const plan = resolveRelease(input, config);
   assert.equal(plan.targetDelta, target, name);
   const reference = simulate(plan);

@@ -9,6 +9,8 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ChevronLeftIcon, ChevronRightIcon } from 'lucide-react';
 
+/* oxlint-disable jsx-a11y/prefer-tag-over-role -- WAI carousel roles and roledescriptions are intentional. */
+
 type CarouselApi = UseEmblaCarouselType[1];
 type UseCarouselParameters = Parameters<typeof useEmblaCarousel>;
 type CarouselOptions = UseCarouselParameters[0];
@@ -95,6 +97,8 @@ function Carousel({
 
   React.useEffect(() => {
     if (!api) return;
+    // Embla exposes its current external store only after initialization.
+    // oxlint-disable-next-line react/react-compiler
     onSelect(api);
     api.on('reInit', onSelect);
     api.on('select', onSelect);

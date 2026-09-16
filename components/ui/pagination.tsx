@@ -8,6 +8,8 @@ import {
   MoreHorizontalIcon,
 } from 'lucide-react';
 
+/* oxlint-disable jsx-a11y/anchor-has-content -- Base UI supplies the composed link children. */
+
 function Pagination({ className, ...props }: React.ComponentProps<'nav'>) {
   return (
     <nav

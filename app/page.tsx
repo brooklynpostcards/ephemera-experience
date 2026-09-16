@@ -103,6 +103,8 @@ function Artwork({ room, priority = false }: { room: Room; priority?: boolean })
   return failed ? (
     <span className="image-failure"><strong>Image unavailable</strong><span>{room.title}</span><small>You can continue to the next room.</small></span>
   ) : (
+    // The exhibit source is data-driven and already carries intrinsic dimensions.
+    // oxlint-disable-next-line next/no-img-element
     <img src={room.src} alt={room.title} width={900} height={900} decoding="async"
       fetchPriority={priority ? 'high' : 'low'} onError={() => setFailed(true)} draggable={false} />
   );
@@ -229,6 +231,8 @@ export default function Museum() {
           motion.anchorDelta = nextAnchor;
           setFoldView({ origin: motion.origin, anchorDelta: nextAnchor });
         }
+        // The RAF callback intentionally schedules itself until the pure state settles.
+        // oxlint-disable-next-line react/react-compiler
         foldFrame.current = requestAnimationFrame(tick);
       }
     };
@@ -307,6 +311,7 @@ export default function Museum() {
 
   useEffect(() => {
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const stageElement = stage.current;
     mounted.current = true;
     const sync = () => {
       reduced.current = preference.matches;
@@ -335,9 +340,9 @@ export default function Museum() {
       completionPending.current = false;
       pendingRelease.current = null;
       activeDrag.current = null;
-      if (stage.current) {
-        paintDrag(stage.current, null);
-        stage.current.removeAttribute('data-fold-drag');
+      if (stageElement) {
+        paintDrag(stageElement, null);
+        stageElement.removeAttribute('data-fold-drag');
       }
       busy.current = false;
     };
@@ -551,7 +556,7 @@ export default function Museum() {
           <p className="navigation-instructions">Arrows / WASD to move<br />Enter to look closer</p>
         </div>
         <footer className="museum-footer"><span>FOLD. WALK. DISCOVER.</span><span className={hasMoved ? 'hint hint-used' : 'hint'}>Swipe up to walk. Sideways to turn.</span><span>THE COLLECTION CONTINUES <ArrowRight size={14} aria-hidden="true" /></span></footer>
-        <p className="sr-only" role="status">Room {current.number}, facing {FACES[position.facing]}. {current.title}.</p>
+        <output className="sr-only">Room {current.number}, facing {FACES[position.facing]}. {current.title}.</output>
       </main>
       {inspecting && (
         <DialogContent className="inspection" showCloseButton={false} finalFocus={frame}>

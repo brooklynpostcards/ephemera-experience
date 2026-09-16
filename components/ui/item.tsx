@@ -6,6 +6,8 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 import { Separator } from '@/components/ui/separator';
 
+/* oxlint-disable jsx-a11y/prefer-tag-over-role -- Polymorphic items cannot guarantee valid ul/ol children. */
+
 function ItemGroup({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div

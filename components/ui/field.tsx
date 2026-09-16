@@ -7,6 +7,8 @@ import { cn } from '@/lib/utils';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 
+/* oxlint-disable jsx-a11y/prefer-tag-over-role -- Field may be nested inside a real fieldset and remains a generic ARIA group. */
+
 function FieldSet({ className, ...props }: React.ComponentProps<'fieldset'>) {
   return (
     <fieldset

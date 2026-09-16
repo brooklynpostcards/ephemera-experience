@@ -8,6 +8,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 
+/* oxlint-disable jsx-a11y/prefer-tag-over-role -- These wrappers group controls without imposing fieldset content rules. */
+/* oxlint-disable jsx-a11y/click-events-have-key-events -- Addon clicks only transfer focus to the keyboard-reachable input. */
+/* oxlint-disable jsx-a11y/no-noninteractive-element-interactions -- Addons may contain buttons, so the wrapper cannot itself be a button. */
+
 function InputGroup({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
