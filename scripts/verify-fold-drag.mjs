@@ -277,7 +277,7 @@ try {
       const snapshot = () => JSON.stringify({
         depth: document.querySelector('.museum').dataset.depth,
         facing: document.querySelector('.museum').dataset.facing,
-        status: document.querySelector('[role="status"]').textContent,
+        status: document.querySelector('output, [role="status"]').textContent,
         stage: element.className, drag: element.hasAttribute('data-fold-drag'),
         rooms: [...element.querySelectorAll('.museum-room')].map((room) =>
           [room.dataset.depth, room.dataset.offset, room.getAttribute('style'), room.inert]),
@@ -532,7 +532,7 @@ try {
       const startX = window.__foldPointerX;
       const startY = window.__foldPointerY;
       const settledDepth = Number(document.querySelector('.museum').dataset.depth);
-      const announcement = document.querySelector('[role="status"]').textContent;
+      const announcement = document.querySelector('output, [role="status"]').textContent;
       const orientation = () => [...document.querySelectorAll('.room-heading, .navigation-area, .movement')]
         .map((node) => {
           const box = node.getBoundingClientRect();
@@ -541,9 +541,9 @@ try {
       const originalOrientation = JSON.stringify(orientation());
       window.__foldStatusChanges = [];
       const statusObserver = new MutationObserver(() => {
-        window.__foldStatusChanges.push(document.querySelector('[role="status"]').textContent);
+        window.__foldStatusChanges.push(document.querySelector('output, [role="status"]').textContent);
       });
-      statusObserver.observe(document.querySelector('[role="status"]'),
+      statusObserver.observe(document.querySelector('output, [role="status"]'),
         { childList: true, characterData: true, subtree: true });
       window.__foldStatusObserver = statusObserver;
       window.__foldLandingCleanup = [];
@@ -605,7 +605,7 @@ try {
         window.__foldWindows.push({ anchor, rows,
           images: document.querySelectorAll('img').length,
           focused: document.activeElement === element,
-          announced: document.querySelector('[role="status"]').textContent === announcement });
+          announced: document.querySelector('output, [role="status"]').textContent === announcement });
         previousNodes = new Map(rooms.map((room, index) =>
           [Number(room.dataset.depth), { room, image: room.querySelector('img'),
             relative: rows[index].relative, crease: rows[index].crease,
@@ -635,7 +635,7 @@ try {
         const rooms = [...museum.querySelectorAll('.museum-room')];
         const busy = element.classList.contains('action-dragging');
         window.__foldAudit.push({ depth: Number(museum.dataset.depth), facing: Number(museum.dataset.facing), busy,
-          announcement: museum.querySelector('[role="status"]').textContent,
+          announcement: museum.querySelector('output, [role="status"]').textContent,
           gated: [...museum.querySelectorAll('.movement button, .room-current button')].every((button) => button.disabled)
             && rooms.every((room) => room.inert),
           rooms: rooms.length, images: document.querySelectorAll('img').length,
@@ -1027,7 +1027,7 @@ try {
     await page.evaluate(() => {
       const stage = document.querySelector('.stage');
       const museum = document.querySelector('.museum');
-      const status = document.querySelector('[role="status"]');
+      const status = document.querySelector('output, [role="status"]');
       const nativeFrame = window.requestAnimationFrame;
       const result = { frames: [], commits: [], status: [], foldFrames: 0, wheelTimes: [] };
       window.__foldReducedAudit = result;

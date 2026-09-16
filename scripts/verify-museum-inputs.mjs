@@ -223,7 +223,7 @@ try {
   const fingerprint = () => page.evaluate(() => JSON.stringify({
     depth: document.querySelector('.museum').dataset.depth,
     facing: document.querySelector('.museum').dataset.facing,
-    status: document.querySelector('[role="status"]').textContent,
+    status: document.querySelector('output, [role="status"]').textContent,
     rooms: [...document.querySelectorAll('.museum-room')].map((room) => ({
       data: { ...room.dataset }, title: room.querySelector('.accession-slip').textContent,
       image: room.querySelector('img').getAttribute('src'), accent: room.style.getPropertyValue('--room-accent'),
@@ -234,7 +234,7 @@ try {
   await pause();
   await page.evaluate(() => {
     const stage = document.querySelector('.stage'), museum = document.querySelector('.museum');
-    const status = document.querySelector('[role="status"]');
+    const status = document.querySelector('output, [role="status"]');
     const nativeFrame = window.requestAnimationFrame;
     const audit = { frames: [], commits: [], status: [], rafCalls: 0, peakRooms: 3, peakImages: 3, writes: 0 };
     window.__touchAudit = audit;
