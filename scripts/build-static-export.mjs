@@ -13,10 +13,12 @@
 import { spawn } from 'node:child_process';
 import { cp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const root = new URL('..', import.meta.url);
 const distClient = new URL('./dist/client/', root);
 const wranglerConfig = new URL('./dist/server/wrangler.json', root);
+const wranglerCli = new URL('./node_modules/wrangler/bin/wrangler.js', root);
 const outDir = new URL('./static-export/', root);
 const port = 8788;
 
@@ -27,6 +29,7 @@ async function rewriteBasePaths(dir) {
   if (!base) return;
   const rewritable = /\.(html|js|mjs|css|json)$/;
   const targets = ['/_next/', '/exhibits/', '/favicon.svg'];
+  const escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const path = new URL(entry.name, dir.href.endsWith('/') ? dir : `${dir}/`);
     if (entry.isDirectory()) {
@@ -34,9 +37,17 @@ async function rewriteBasePaths(dir) {
     } else if (rewritable.test(entry.name)) {
       let text = await readFile(path, 'utf8');
       for (const target of targets) {
-        text = text.split(`"${target}`).join(`"${base}${target}`);
-        text = text.split(`'${target}`).join(`'${base}${target}`);
-        text = text.split('`' + target).join('`' + base + target);
+        const escapedTarget = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // Also cover paths nested in serialized RSC payloads (for example
+        // `css:/_next/...`), while leaving paths already prefixed by base intact.
+        text = text.replace(new RegExp(`(?<!${escapedBase})${escapedTarget}`, 'g'),
+          `${base}${target}`);
+      }
+      // Vite's dynamic dependency table and client-entry manifest use quoted
+      // `_next/...` paths without a leading slash. Make those base-absolute;
+      // ordinary relative module imports begin with `./` and remain unchanged.
+      for (const quote of ['"', "'", '`']) {
+        text = text.split(`${quote}_next/`).join(`${quote}${base}/_next/`);
       }
       await writeFile(path, text);
     }
@@ -62,9 +73,10 @@ if (!existsSync(distClient)) {
 await rm(outDir, { recursive: true, force: true });
 await cp(distClient, outDir, { recursive: true });
 
-const wrangler = spawn('npx', ['wrangler', 'dev', '--config', wranglerConfig.pathname.slice(1), '--port', String(port)], {
-  cwd: root,
-  shell: true,
+const wrangler = spawn(process.execPath, [fileURLToPath(wranglerCli), 'dev',
+  '--config', fileURLToPath(wranglerConfig), '--port', String(port)], {
+  cwd: fileURLToPath(root),
+  stdio: 'inherit',
 });
 
 try {
